@@ -639,6 +639,301 @@ async function stageFour(cdp, check) {
 }
 
 // ================================================================
+//  第五阶段：界面与拖动
+//
+//  这一层没有「图数据」那种硬不变量，能钉住的是交互的结果：
+//  切主题之后 DOM 变量和卡片底色真的变了、帮助面板列得出快捷键、
+//  搜索结果能被方向键选中、悬停把无关的边压暗、点一下不该被记成拖动、
+//  子节点怎么拖都出不了父容器。
+// ================================================================
+
+/** 模拟一次拖动：grab → 挪到目标点 → drag → free。 */
+async function dragNodeTo(cdp, id, dx, dy) {
+    return cdp.eval(`
+        (function () {
+            var el = window.__codemap.cy.getElementById(${JSON.stringify(id)});
+            if (el.empty()) return '';
+            var p = el.position();
+            el.emit('grab');
+            el.position({ x: p.x + ${dx}, y: p.y + ${dy} });
+            el.emit('drag');
+            el.emit('free');
+            return JSON.stringify(el.position());
+        })()`);
+}
+
+/** 这个节点是否整个落在（当前可见的）父容器里。 */
+async function insideParent(cdp, id) {
+    return cdp.eval(`
+        (function () {
+            var app = window.__codemap;
+            var n = app.state.nodeById.get(${JSON.stringify(id)});
+            var el = app.cy.getElementById(${JSON.stringify(id)});
+            if (!n || el.empty()) return 'skip';
+            var parent = app.layoutParentOf(n);
+            if (!parent) return 'root';
+            var pel = app.cy.getElementById(parent.id);
+            if (pel.empty()) return 'skip';
+            var a = el.boundingBox(), b = pel.boundingBox();
+            return JSON.stringify(a.x1 >= b.x1 - 1 && a.x2 <= b.x2 + 1
+                && a.y1 >= b.y1 - 1 && a.y2 <= b.y2 + 1);
+        })()`);
+}
+
+async function stageFive(cdp, check) {
+    console.log('\n== 第五阶段：界面 ==');
+    const before = JSON.parse(await cdp.eval(`
+        (function () {
+            var c = document.querySelector('.mermaid-card');
+            return JSON.stringify({
+                theme: document.documentElement.getAttribute('data-theme'),
+                surface: getComputedStyle(document.documentElement).getPropertyValue('--surface').trim(),
+                border: c ? getComputedStyle(c).borderTopColor : '',
+                version: window.__codemap.state.version,
+            });
+        })()`));
+
+    // —— 主题：换到「另一套」配色，DOM 变量和卡片底色都得跟着走 ——
+    // 用「另一套」而不是写死 dark：主题会存在 localStorage 里，
+    // 上一次运行留下的选择会让「切到深色」变成原地不动
+    const other = before.theme === 'dark' ? 'light' : 'dark';
+    await cdp.eval(`window.__codemap.setTheme(${JSON.stringify(other)}, { silent: true }); true`);
+    await sleep(600);
+    const dark = JSON.parse(await cdp.eval(`
+        (function () {
+            var c = document.querySelector('.mermaid-card');
+            return JSON.stringify({
+                attr: document.documentElement.getAttribute('data-theme'),
+                surface: getComputedStyle(document.documentElement).getPropertyValue('--surface').trim(),
+                border: c ? getComputedStyle(c).borderTopColor : '',
+            });
+        })()`));
+    check('切到另一套主题：DOM 变量跟着换', dark.attr === other, dark.attr);
+    check('切主题会让卡片重新上色', dark.border !== before.border,
+        `${before.border} → ${dark.border}`);
+    check('底色变量也跟着换', !!dark.surface && dark.surface !== before.surface,
+        `${before.surface} → ${dark.surface}`);
+
+    await cdp.eval(`window.__codemap.setTheme(${JSON.stringify(before.theme)}, { silent: true }); true`);
+    await sleep(500);
+    check('能切回原来的主题',
+        (await cdp.eval("document.documentElement.getAttribute('data-theme')")) === before.theme);
+
+    // —— 宿主标题栏：标题栏底和窗口按钮是宿主画的，页面看不见它们，
+    //    所以靠宿主回执（shell-theme）来核对它真的跟着换了 ——
+    await cdp.eval("window.__codemap.setTheme('dark', { silent: true }); true");
+    await sleep(900);
+    const shellDark = JSON.parse(await cdp.eval(
+        'JSON.stringify(window.__codemap.snapshotSummary().shell)'));
+    check('切深色后外壳收到主题并落到根元素上',
+        !!shellDark && shellDark.dark === true && shellDark.actual === 'Dark',
+        JSON.stringify(shellDark));
+    check('标题栏底色换成了深色那套',
+        !!shellDark && /0E131C$/i.test(shellDark.band), shellDark && shellDark.band);
+
+    await cdp.eval("window.__codemap.setTheme('light', { silent: true }); true");
+    await sleep(900);
+    const shellLight = JSON.parse(await cdp.eval(
+        'JSON.stringify(window.__codemap.snapshotSummary().shell)'));
+    check('切浅色后外壳跟着回到浅色',
+        !!shellLight && shellLight.dark === false && shellLight.actual === 'Light',
+        JSON.stringify(shellLight));
+    check('标题栏底色换回浅色那套',
+        !!shellLight && /F4F6F9$/i.test(shellLight.band), shellLight && shellLight.band);
+
+    await cdp.eval(`window.__codemap.setTheme(${JSON.stringify(before.theme)}, { silent: true }); true`);
+    await sleep(500);
+
+    // —— 帮助面板 ——
+    await cdp.eval('window.__codemap.toggleHelp(true); true');
+    await sleep(250);
+    const help = JSON.parse(await cdp.eval(`
+        (function () {
+            return JSON.stringify({
+                open: document.getElementById('help').classList.contains('open'),
+                rows: document.querySelectorAll('#helpRows .help-row').length,
+            });
+        })()`));
+    check('帮助面板能打开', help.open === true);
+    check('帮助面板列出了快捷键', help.rows >= 10, `${help.rows} 条`);
+    await cdp.eval(
+        "window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true");
+    await sleep(250);
+    check('Esc 关得掉帮助面板',
+        (await cdp.eval("!document.getElementById('help').classList.contains('open')")) === true);
+
+    // —— 搜索：命中高亮 + 方向键选择 ——
+    await cdp.eval(`
+        (function () {
+            var s = document.getElementById('search');
+            s.value = 'Analyzer';
+            s.dispatchEvent(new Event('input'));
+            return true;
+        })()`);
+    await sleep(1300);
+    const search = JSON.parse(await cdp.eval(`
+        (function () {
+            var box = document.getElementById('results');
+            return JSON.stringify({
+                rows: box.querySelectorAll('.row').length,
+                marks: box.querySelectorAll('.row mark').length,
+                active: box.querySelectorAll('.row.active').length,
+                clear: !document.getElementById('searchClear').hidden,
+            });
+        })()`));
+    check('搜索结果列出了候选', search.rows > 0, `${search.rows} 行`);
+    check('命中的关键词被标出来了', search.marks > 0, `${search.marks} 处`);
+    check('默认高亮第一行', search.active === 1, `${search.active} 行`);
+    check('有内容时出现清空按钮', search.clear === true);
+
+    await cdp.eval(`document.getElementById('search').dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true })); true`);
+    await sleep(150);
+    check('方向键能在候选里移动',
+        (await cdp.eval(`
+            (function () {
+                var rows = document.getElementById('results').querySelectorAll('.row');
+                return !!(rows[1] && rows[1].classList.contains('active'));
+            })()`)) === true);
+
+    await cdp.eval("window.__codemap.clearFilter(); document.getElementById('search').value = ''; true");
+    await sleep(900);
+
+    // —— 悬停高亮：无关的边压暗，移开恢复 ——
+    // 先把画面停稳：淡出中的边透明度本来就是 0 附近，会污染这里的基准
+    await cdp.eval('window.__codemap.render({ animate: false }); true');
+    await sleep(400);
+    const spot = JSON.parse(await cdp.eval(`
+        (function () {
+            var app = window.__codemap;
+            var pick = null;
+            app.cy.nodes().forEach(function (n) {
+                if (pick || n.data('isMethod')) return;
+                if (n.closedNeighborhood().edges().length > 0) pick = n;
+            });
+            if (!pick) return JSON.stringify({ skip: true });
+            var dim = function () {
+                var n = 0;
+                app.cy.edges().forEach(function (e) {
+                    if (parseFloat(e.style('opacity')) < 0.2) n++;
+                });
+                return n;
+            };
+            var beforeDim = dim();
+            app.spotlight(pick);
+            var onDim = dim();
+            app.clearSpotlight();
+            var offDim = dim();
+            return JSON.stringify({
+                label: String(pick.data('label')),
+                before: beforeDim, on: onDim, off: offDim,
+            });
+        })()`));
+    if (spot.skip) {
+        check('悬停高亮：当前视图里没有带边的节点（跳过）', true);
+    } else {
+        check('悬停会把无关的边压暗', spot.on > spot.before,
+            `${spot.label}：${spot.before} → ${spot.on} 条`);
+        check('移开之后边的透明度恢复', spot.off === spot.before,
+            `${spot.on} → ${spot.off} 条`);
+    }
+
+    // —— 拖动：点一下不算拖、子节点出不了父容器、连拖两次不丢位移 ——
+    const setup = JSON.parse(await cdp.eval(`
+        (function () {
+            var app = window.__codemap;
+            app.clearFilter();
+            app.state.offsets.clear();
+            app.state.expanded.clear();
+            app.render({ animate: false });
+            // 上一阶段把模式切成了「平铺：类型」，先切回按命名空间聚合，
+            // 否则画布上根本没有可以展开的容器
+            if (app.state.mode !== 'namespace') document.getElementById('modeBtn').click();
+            var ns = app.cy.nodes('[isNs]');
+            if (!ns.length) return JSON.stringify({ skip: true });
+            ns[0].emit('tap');
+            return JSON.stringify({ skip: false, node: ns[0].id() });
+        })()`));
+
+    if (setup.skip) {
+        check('拖动：当前视图没有可展开的命名空间（跳过）', true);
+    } else {
+        await sleep(1200);
+
+        // 布局动画还在跑的时候点一下卡片，不该被记成一次拖动
+        const phantom = JSON.parse(await cdp.eval(`
+            (function () {
+                var app = window.__codemap;
+                app.state.offsets.clear();
+                var t = app.cy.nodes('[isType]');
+                if (!t.length) return JSON.stringify({ skip: true });
+                t[0].emit('grab');
+                t[0].emit('free');
+                var out = [];
+                app.state.offsets.forEach(function (v) {
+                    out.push([Math.round(v.dx), Math.round(v.dy)]);
+                });
+                return JSON.stringify({ skip: false, offsets: out, id: t[0].id() });
+            })()`));
+
+        if (phantom.skip) {
+            check('动画中点一下不会记出拖动位移（没有类型节点，跳过）', true);
+        } else {
+            check('动画中点一下不会记出拖动位移', phantom.offsets.length === 0,
+                JSON.stringify(phantom.offsets));
+
+            // 往右下一把甩出去：只能贴到容器边上，不能整个跑到外面
+            await dragNodeTo(cdp, phantom.id, 900, 500);
+            await cdp.eval('window.__codemap.render({ animate: false }); true');
+            check('子节点被拖不出父容器', (await insideParent(cdp, phantom.id)) === 'true');
+
+            // 第二次拖动不能把第一次的位移吞掉
+            const twice = JSON.parse(await cdp.eval(`
+                (function () {
+                    var app = window.__codemap;
+                    var id = ${JSON.stringify(phantom.id)};
+                    var el = app.cy.getElementById(id);
+                    var first = app.state.offsets.get(id) || { dx: 0, dy: 0 };
+                    var p = el.position();
+                    el.emit('grab');
+                    el.position({ x: p.x - 30, y: p.y - 20 });
+                    el.emit('drag');
+                    el.emit('free');
+                    var second = app.state.offsets.get(id) || { dx: 0, dy: 0 };
+                    return JSON.stringify({
+                        first: [Math.round(first.dx), Math.round(first.dy)],
+                        second: [Math.round(second.dx), Math.round(second.dy)],
+                    });
+                })()`));
+            check('连着拖两次不会丢掉上一次的位移',
+                Math.abs(twice.second[0] - twice.first[0]) > 1 ||
+                Math.abs(twice.second[1] - twice.first[1]) > 1,
+                `${JSON.stringify(twice.first)} → ${JSON.stringify(twice.second)}`);
+
+            await cdp.eval('window.__codemap.resetDragOffsets(); true');
+        }
+    }
+
+    // —— 重新分析：页面 → 宿主 → 重跑一遍 → 新快照 ——
+    await cdp.eval("document.getElementById('reloadBtn').click(); true");
+    let bumped = false;
+    for (let i = 0; i < 40; i++) {
+        if ((await cdp.eval('window.__codemap.state.version')) > before.version) {
+            bumped = true;
+            break;
+        }
+        await sleep(500);
+    }
+    check('「重新分析」会推出新快照', bumped,
+        `v${before.version} → v${await cdp.eval('window.__codemap.state.version')}`);
+    await sleep(800);
+
+    const after = JSON.parse(await cdp.eval('JSON.stringify(window.__codemap.snapshotSummary())'));
+    check('界面操作全程无 JS 错误', after.errors.length === 0, after.errors.slice(0, 2).join(' | '));
+    check('重新分析后没有卡在「进行中」', after.busy === false);
+}
+
+// ================================================================
 //  主流程
 // ================================================================
 
@@ -661,6 +956,7 @@ const check = (label, ok, detail) => {
 try {
     await stageOneToThree(cdp, check);
     await stageFour(cdp, check);
+    await stageFive(cdp, check);
 } catch (err) {
     console.error(`\n探针中断：${err.message}`);
     failures++;

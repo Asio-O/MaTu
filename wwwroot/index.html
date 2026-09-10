@@ -1,382 +1,1335 @@
 <!DOCTYPE html>
-<html>
+<html lang="zh-CN">
 <head>
     <meta charset="utf-8">
+    <meta name="color-scheme" content="light dark">
     <title>码图</title>
     <style>
-        html, body, #cy {
+        /*  ============================================================
+            码图 · 渲染层样式
+
+            配色只有一个来源：app.js 里的 THEMES。它把变量写到 <html> 上，
+            CSS 与卡片内联样式都从同一份表取值，避免「改了一处、另一处还留着旧色」。
+            这里写的是浅色主题的默认值，深色由 html[data-theme="dark"] 覆盖。
+            ============================================================ */
+        :root {
+            --bg: #f4f6f9;
+            --grid: rgba(15, 23, 42, .05);
+            --surface: #ffffff;
+            --surface-2: rgba(255, 255, 255, .82);
+            --surface-3: #f4f6fa;
+            --border: #e4e8ef;
+            --border-strong: #d3dae4;
+            --divider: #edf0f5;
+            --ink: #131a26;
+            --ink-2: #4a5568;
+            --ink-3: #8792a2;
+            --brand: #3d6df6;
+            --brand-soft: rgba(61, 109, 246, .10);
+            --brand-ink: #ffffff;
+            --danger: #e5484d;
+            --danger-soft: rgba(229, 72, 77, .12);
+            --ok: #12a594;
+            --shadow-1: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .05);
+            --shadow-2: 0 6px 16px -4px rgba(16, 24, 40, .12), 0 14px 32px -16px rgba(16, 24, 40, .24);
+            --shadow-3: 0 24px 64px -20px rgba(16, 24, 40, .40);
+            --ring: 0 0 0 3px rgba(61, 109, 246, .28);
+            --radius-s: 6px;
+            --radius-m: 9px;
+            --radius-l: 14px;
+            --font-ui: 'Segoe UI Variable Text', 'Segoe UI', 'Microsoft YaHei UI', 'Microsoft YaHei', sans-serif;
+            --font-mono: 'Cascadia Mono', 'Consolas', 'Menlo', monospace;
+            --toolbar-h: 48px;
+        }
+
+        html[data-theme="dark"] {
+            --bg: #0e131c;
+            --grid: rgba(255, 255, 255, .035);
+            --surface: #161d29;
+            --surface-2: rgba(19, 26, 38, .82);
+            --surface-3: #1b2431;
+            --border: #273143;
+            --border-strong: #35415a;
+            --divider: #212b3b;
+            --ink: #e8edf6;
+            --ink-2: #a9b4c6;
+            --ink-3: #6f7c92;
+            --brand: #6b8dff;
+            --brand-soft: rgba(107, 141, 255, .16);
+            --brand-ink: #0b1020;
+            --danger: #ff6b6b;
+            --danger-soft: rgba(255, 107, 107, .16);
+            --ok: #3ecfb2;
+            --shadow-1: 0 1px 2px rgba(0, 0, 0, .45);
+            --shadow-2: 0 8px 20px -6px rgba(0, 0, 0, .55), 0 18px 44px -22px rgba(0, 0, 0, .80);
+            --shadow-3: 0 28px 72px -24px rgba(0, 0, 0, .85);
+            --ring: 0 0 0 3px rgba(107, 141, 255, .30);
+        }
+
+        * { box-sizing: border-box; }
+
+        html, body {
             margin: 0;
             height: 100%;
             overflow: hidden;
-            background: #fafafa;
-            font-family: 'Segoe UI', 'Microsoft YaHei', sans-serif;
         }
 
-        /* —— 顶部工具条 —— */
+        body {
+            background: var(--bg);
+            color: var(--ink);
+            font-family: var(--font-ui);
+            font-size: 12px;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        /*  画布：cytoscape 的 canvas 是透明的，容器自己的背景 + 点阵因此能透出来。
+            点阵是给「空画布」一点空间感的，密度压得很低，不跟卡片抢注意力。  */
+        #cy {
+            position: absolute;
+            inset: 0;
+            background-color: var(--bg);
+            background-image: radial-gradient(circle at 1px 1px, var(--grid) 1px, transparent 0);
+            background-size: 26px 26px;
+        }
+
+        /*  ============================ 顶部工具条 ============================ */
         #toolbar {
             position: absolute;
             top: 0;
             left: 0;
             right: 0;
-            height: 38px;
+            height: var(--toolbar-h);
             display: flex;
             align-items: center;
             gap: 8px;
             padding: 0 10px;
-            background: #ffffff;
-            border-bottom: 1px solid #e4e6eb;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            background: var(--surface-2);
+            backdrop-filter: blur(18px) saturate(1.6);
+            -webkit-backdrop-filter: blur(18px) saturate(1.6);
+            border-bottom: 1px solid var(--border);
             z-index: 20;
-            font-size: 12px;
-            box-sizing: border-box;
         }
 
-        #toolbar .brand {
-            font-weight: 700;
-            font-size: 14px;
-            color: #2b3a4a;
-            letter-spacing: 1px;
-            margin-right: 4px;
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            padding-right: 2px;
+            flex: none;
+            user-select: none;
         }
 
-        #toolbar button {
-            font: 12px/1 inherit;
-            padding: 5px 10px;
-            border: 1px solid #d6dae0;
-            border-radius: 4px;
-            background: #f7f8fa;
-            color: #333;
-            cursor: pointer;
+        .brand-mark {
+            flex: none;
+            width: 24px;
+            height: 24px;
+            border-radius: 7px;
+            display: grid;
+            place-items: center;
+            color: #fff;
+            background: linear-gradient(140deg, #5b8cff, #3d6df6 55%, #2f54d0);
+            box-shadow: 0 2px 6px rgba(61, 109, 246, .35);
+        }
+
+        .brand-name {
+            font-size: 13px;
+            font-weight: 650;
+            letter-spacing: .5px;
+            color: var(--ink);
             white-space: nowrap;
         }
 
-            #toolbar button:hover {
-                background: #eef3ff;
-                border-color: #4c8dff;
-                color: #1b5fd9;
-            }
-
-            #toolbar button.primary {
-                background: #4c8dff;
-                border-color: #4c8dff;
-                color: #fff;
-            }
-
-                #toolbar button.primary:hover {
-                    background: #3579f0;
-                }
-
-        #toolbar .spacer { flex: 1; }
-
-        #toolbar .divider {
+        .divider {
             width: 1px;
             height: 20px;
-            background: #e4e6eb;
+            background: var(--border);
+            flex: none;
         }
 
-        #toolbar select, #toolbar input[type="search"] {
-            font: 12px/1 inherit;
-            padding: 4px 6px;
-            border: 1px solid #d6dae0;
-            border-radius: 4px;
-            background: #fff;
-            color: #333;
+        .group {
+            display: flex;
+            align-items: center;
+            gap: 4px;
         }
 
-        #toolbar input[type="search"] {
-            width: 220px;
+        .spacer { flex: 1; min-width: 4px; }
+
+        /*  —— 按钮 ——  */
+        button {
+            font: inherit;
+            color: var(--ink-2);
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: var(--radius-s);
+            cursor: pointer;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            transition: background-color .14s, border-color .14s, color .14s, box-shadow .14s;
         }
 
-            #toolbar input[type="search"]:focus {
-                outline: none;
-                border-color: #4c8dff;
-                box-shadow: 0 0 0 2px rgba(76,141,255,0.18);
+        .btn {
+            height: 28px;
+            padding: 0 9px;
+            font-size: 12px;
+            white-space: nowrap;
+        }
+
+            .btn:hover, .icon-btn:hover {
+                background: var(--surface-3);
+                border-color: var(--border);
+                color: var(--ink);
             }
 
-        /* —— 搜索结果 —— */
+            .btn:active, .icon-btn:active { transform: translateY(.5px); }
+
+            .btn.on {
+                background: var(--brand-soft);
+                border-color: transparent;
+                color: var(--brand);
+                font-weight: 600;
+            }
+
+            .btn.primary {
+                background: var(--brand);
+                color: var(--brand-ink);
+                border-color: transparent;
+                font-weight: 600;
+                box-shadow: 0 1px 2px rgba(16, 24, 40, .18);
+            }
+
+                .btn.primary:hover { filter: brightness(1.06); background: var(--brand); color: var(--brand-ink); }
+
+            .btn.ghost-danger { color: var(--danger); }
+
+        button:focus-visible,
+        input:focus-visible,
+        select:focus-visible {
+            outline: none;
+            box-shadow: var(--ring);
+        }
+
+        .icon-btn {
+            width: 28px;
+            height: 28px;
+            padding: 0;
+            justify-content: center;
+            border-radius: var(--radius-s);
+            color: var(--ink-2);
+        }
+
+        .btn svg, .icon-btn svg { flex: none; }
+
+        kbd {
+            font: 10px/1 var(--font-mono);
+            color: var(--ink-3);
+            background: var(--surface-3);
+            border: 1px solid var(--border);
+            border-bottom-width: 2px;
+            border-radius: 4px;
+            padding: 2px 5px;
+        }
+
+        /*  —— 下拉 ——  */
+        select {
+            font: 12px/1 inherit;
+            height: 28px;
+            padding: 0 22px 0 8px;
+            color: var(--ink-2);
+            background-color: var(--surface);
+            background-image: url("data:image/svg+xml;charset=utf8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' viewBox='0 0 24 24' fill='none' stroke='%238792a2' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M6 9l6 6 6-6'/%3E%3C/svg%3E");
+            background-repeat: no-repeat;
+            background-position: right 7px center;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-s);
+            appearance: none;
+            cursor: pointer;
+            transition: border-color .14s, background-color .14s;
+        }
+
+            select:hover { border-color: var(--border-strong); color: var(--ink); }
+
+        /*  ============================ 搜索 ============================ */
+        .search {
+            position: relative;
+            display: flex;
+            align-items: center;
+            flex: 0 1 300px;
+            min-width: 180px;
+        }
+
+        .search-icon {
+            position: absolute;
+            left: 9px;
+            color: var(--ink-3);
+            pointer-events: none;
+        }
+
+        #search {
+            font: 12px/1 inherit;
+            width: 100%;
+            height: 30px;
+            padding: 0 62px 0 29px;
+            color: var(--ink);
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            transition: border-color .14s, box-shadow .14s, background-color .14s;
+        }
+
+            #search::placeholder { color: var(--ink-3); }
+            #search:hover { border-color: var(--border-strong); }
+            #search:focus { outline: none; border-color: var(--brand); box-shadow: var(--ring); }
+            #search::-webkit-search-cancel-button { display: none; }
+
+        .search-kbd {
+            position: absolute;
+            right: 8px;
+            pointer-events: none;
+            opacity: .9;
+        }
+
+        .search.has-value .search-kbd { display: none; }
+
+        .search-clear {
+            position: absolute;
+            right: 6px;
+            width: 20px;
+            height: 20px;
+            border-radius: 50%;
+            color: var(--ink-3);
+            justify-content: center;
+        }
+
+            .search-clear:hover { background: var(--surface-3); color: var(--ink); }
+
         #results {
             position: absolute;
-            top: 40px;
+            top: calc(100% + 7px);
             left: 0;
-            z-index: 30;
-            background: #fff;
-            border: 1px solid #e4e6eb;
-            border-top: none;
-            border-radius: 0 0 5px 5px;
-            box-shadow: 0 6px 14px rgba(0,0,0,0.10);
-            max-height: 300px;
+            min-width: 360px;
+            max-width: 78vw;
+            max-height: 340px;
             overflow-y: auto;
+            padding: 5px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-l);
+            box-shadow: var(--shadow-3);
             display: none;
-            min-width: 300px;
+            z-index: 1;
+            max-width: min(620px, 72vw);
         }
 
             #results.open { display: block; }
 
-            #results .row {
-                padding: 5px 10px;
-                font-size: 12px;
-                cursor: pointer;
-                display: flex;
-                gap: 8px;
-                align-items: baseline;
-                white-space: nowrap;
-            }
+        #results .row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 8px;
+            border-radius: var(--radius-m);
+            cursor: pointer;
+            color: var(--ink);
+        }
 
-                #results .row:hover, #results .row.active {
-                    background: #eef3ff;
-                }
+            #results .row:hover, #results .row.active { background: var(--brand-soft); }
 
-            #results .kind {
-                font-size: 10px;
-                color: #fff;
-                border-radius: 3px;
-                padding: 1px 5px;
-                flex: none;
-            }
+        #results .kind {
+            flex: none;
+            min-width: 38px;
+            text-align: center;
+            font-size: 10px;
+            font-weight: 600;
+            color: #fff;
+            background: var(--ink-3);
+            border-radius: 999px;
+            padding: 2px 7px;
+        }
 
-            #results .fqn {
-                color: #8a929e;
-                font-family: 'Cascadia Mono', 'Consolas', monospace;
-                font-size: 10.5px;
-                overflow: hidden;
-                text-overflow: ellipsis;
-            }
+        #results .label {
+            flex: none;
+            max-width: 240px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
 
-            #results .more {
-                padding: 6px 10px;
-                font-size: 11px;
-                color: #98a2b3;
-                border-top: 1px solid #f2f3f5;
-            }
+        #results .label mark {
+            background: rgba(255, 196, 0, .32);
+            color: inherit;
+            border-radius: 3px;
+            padding: 0 1px;
+        }
 
-        #focusBar {
+        #results .fqn {
+            flex: 1;
+            min-width: 0;
+            color: var(--ink-3);
+            font-family: var(--font-mono);
+            font-size: 10.5px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            text-align: right;
+            direction: rtl;
+        }
+
+        #results .more {
+            padding: 7px 9px 4px;
+            margin-top: 3px;
+            border-top: 1px solid var(--divider);
+            color: var(--ink-3);
+            font-size: 11px;
+        }
+
+        #results .foot {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            padding: 6px 9px 3px;
+            margin-top: 3px;
+            border-top: 1px solid var(--divider);
+            color: var(--ink-3);
+            font-size: 10.5px;
+        }
+
+        /*  ============================ 浮动控件 ============================ */
+        .float {
             position: absolute;
-            top: 46px;
-            right: 10px;
             z-index: 10;
+            background: var(--surface-2);
+            backdrop-filter: blur(14px) saturate(1.5);
+            -webkit-backdrop-filter: blur(14px) saturate(1.5);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-m);
+            box-shadow: var(--shadow-2);
+        }
+
+        /*  —— 面包屑 ——  */
+        #crumbs {
+            top: calc(var(--toolbar-h) + 10px);
+            left: 12px;
+            display: none;
+            align-items: center;
+            gap: 2px;
+            max-width: min(58vw, 720px);
+            padding: 3px 6px 3px 8px;
+            border-radius: 999px;
+        }
+
+            #crumbs.open { display: flex; }
+
+        #crumbs .crumb {
+            height: 22px;
+            padding: 0 7px;
+            border-radius: 999px;
+            font-size: 11.5px;
+            color: var(--ink-2);
+            max-width: 210px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            display: inline-block;
+            line-height: 22px;
+        }
+
+            #crumbs .crumb:hover { background: var(--brand-soft); color: var(--brand); }
+
+        #crumbs .crumb.last {
+            color: var(--ink);
+            font-weight: 600;
+        }
+
+        #crumbs .sep {
+            color: var(--ink-3);
+            font-size: 11px;
+            flex: none;
+            padding: 0 1px;
+        }
+
+        #crumbs .dot {
+            flex: none;
+            width: 7px;
+            height: 7px;
+            display: inline-block;
+            border-radius: 50%;
+            margin-right: 5px;
+            vertical-align: middle;
+        }
+
+        /*  —— 聚焦提示条 ——  */
+        #focusBar {
+            top: calc(var(--toolbar-h) + 10px);
+            right: 12px;
             display: none;
             align-items: center;
             gap: 8px;
-            background: rgba(255,255,255,0.95);
-            border: 1px solid #ffd7c2;
-            border-left: 3px solid #e76f51;
-            border-radius: 4px;
-            padding: 4px 8px;
-            font-size: 12px;
-            color: #8a4b31;
+            padding: 4px 5px 4px 11px;
+            border-radius: 999px;
+            font-size: 11.5px;
+            color: var(--ink-2);
+            max-width: min(52vw, 620px);
         }
 
             #focusBar.open { display: flex; }
 
-            #focusBar button {
-                font: 11px/1 inherit;
-                padding: 3px 7px;
-                border: 1px solid #e0b6a2;
-                background: #fff5f0;
-                color: #8a4b31;
-                border-radius: 3px;
-                cursor: pointer;
-            }
+            #focusBar .lens { color: var(--brand); flex: none; }
 
-        #stats {
-            color: #7a8290;
-            font-family: 'Cascadia Mono', 'Consolas', monospace;
-            font-size: 11px;
+        #focusLabel {
+            overflow: hidden;
+            text-overflow: ellipsis;
             white-space: nowrap;
         }
 
-        /* —— 状态提示 —— */
+        /*  —— 底部右侧：缩放 ——  */
+        #zoomDock {
+            left: auto;
+            bottom: 12px;
+            right: 12px;
+            display: flex;
+            align-items: center;
+            gap: 2px;
+            padding: 3px;
+            border-radius: 999px;
+        }
+
+            #zoomDock button {
+                height: 24px;
+                min-width: 26px;
+                padding: 0 7px;
+                justify-content: center;
+                border-radius: 999px;
+                color: var(--ink-2);
+                font-size: 12px;
+            }
+
+                #zoomDock button:hover { background: var(--surface-3); color: var(--ink); }
+
+            #zoomDock .zoom-value {
+                font-family: var(--font-mono);
+                font-size: 10.5px;
+                min-width: 46px;
+                color: var(--ink-2);
+            }
+
+            #zoomDock .sep-dot {
+                width: 1px;
+                height: 14px;
+                background: var(--border);
+                margin: 0 2px;
+            }
+
+        /*  —— 底部左侧：图例 ——  */
+        #legend {
+            left: 12px;
+            bottom: 12px;
+            right: auto;
+            padding: 4px;
+            max-width: 220px;
+            border-radius: var(--radius-m);
+        }
+
+        .legend-head {
+            height: 24px;
+            padding: 0 8px;
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--ink-2);
+            border-radius: var(--radius-s);
+            width: 100%;
+            justify-content: flex-start;
+        }
+
+            .legend-head:hover { background: var(--surface-3); }
+
+            .legend-head .chev { margin-left: auto; transition: transform .18s; color: var(--ink-3); }
+
+        #legend.collapsed .legend-head .chev { transform: rotate(-90deg); }
+        #legend.collapsed .legend-body { display: none; }
+
+        .legend-body {
+            padding: 4px 8px 6px;
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+        }
+
+        .legend-group { display: flex; flex-direction: column; gap: 3px; }
+
+        .legend-title {
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--ink-3);
+            letter-spacing: .4px;
+        }
+
+        .legend-row {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            font-size: 11px;
+            color: var(--ink-2);
+            line-height: 1.5;
+        }
+
+        .legend-row .swatch {
+            flex: none;
+            width: 12px;
+            height: 12px;
+            border-radius: 4px;
+            background: var(--ink-3);
+        }
+
+        .legend-row .line { flex: none; }
+
+        /*  —— 底部居中：提示 / 通知 ——  */
         #hint {
             position: absolute;
-            top: 46px;
-            left: 10px;
-            font: 12px sans-serif;
-            color: #888;
-            z-index: 10;
-            background: rgba(255,255,255,0.9);
-            padding: 4px 8px;
-            border-radius: 4px;
-            max-width: 70vw;
+            left: 50%;
+            bottom: 18px;
+            transform: translate(-50%, 8px);
+            max-width: min(56vw, 760px);
+            padding: 8px 14px;
+            background: var(--surface);
+            color: var(--ink-2);
+            border: 1px solid var(--border);
+            border-radius: 999px;
+            box-shadow: var(--shadow-2);
+            font-size: 12px;
+            z-index: 15;
+            opacity: 0;
             pointer-events: none;
+            transition: opacity .22s, transform .22s;
+            text-align: center;
         }
+
+            #hint.show { opacity: 1; transform: translate(-50%, 0); }
 
             #hint.err {
-                color: #c00;
+                color: var(--danger);
+                border-color: var(--danger);
+                background: var(--danger-soft);
                 font-weight: 600;
-                pointer-events: auto;
+                backdrop-filter: blur(10px);
+                -webkit-backdrop-filter: blur(10px);
             }
 
-        /* —— 图例 —— */
-        #legend {
+        /*  —— 顶部进度条：L2 语义解析 / 项目重建期间显示 ——  */
+        #progress {
             position: absolute;
-            left: 10px;
-            bottom: 10px;
-            z-index: 10;
-            background: rgba(255,255,255,0.92);
-            border: 1px solid #e4e6eb;
-            border-radius: 5px;
-            padding: 6px 9px;
-            font-size: 11px;
-            color: #555;
-            line-height: 1.7;
+            top: var(--toolbar-h);
+            left: 0;
+            right: 0;
+            height: 2px;
+            overflow: hidden;
+            z-index: 25;
+            opacity: 0;
+            transition: opacity .2s;
             pointer-events: none;
         }
 
-            #legend .swatch {
-                display: inline-block;
-                width: 14px;
-                height: 0;
-                border-top-width: 2px;
-                border-top-style: solid;
-                vertical-align: middle;
-                margin-right: 5px;
+            #progress.on { opacity: 1; }
+
+            #progress::after {
+                content: '';
+                position: absolute;
+                inset: 0;
+                width: 34%;
+                border-radius: 2px;
+                background: linear-gradient(90deg, transparent, var(--brand), transparent);
+                animation: sweep 1.15s cubic-bezier(.6, .05, .4, .95) infinite;
             }
 
-        /* —— mermaid 风格卡片 —— */
+        @keyframes sweep {
+            from { transform: translateX(-110%); }
+            to { transform: translateX(390%); }
+        }
+
+        /*  ============================ 卡片 ============================ */
+        /*  卡片是 DOM 层：整层盖在 canvas 之上，子节点画在 canvas 上，
+            所以托盘底色必须透明，否则内部的子节点会被糊住。
+            pointer-events 必须为 none —— 点击要落回 canvas 上的 cytoscape 节点。 */
         .mermaid-card {
-            background: #ffffff;
-            border: 1.5px solid #4c8dff;
-            border-radius: 5px;
-            font-family: 'Cascadia Mono', 'Consolas', 'Menlo', monospace;
-            font-size: 11px;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.10);
+            --accent: #3b82f6;
+            --accent-soft: rgba(59, 130, 246, .10);
+            --accent-border: rgba(59, 130, 246, .38);
+            --accent-ink: #1d4ed8;
+            display: flex;
+            flex-direction: column;
+            width: 232px;
+            background: var(--surface);
+            border: 1px solid var(--accent-border);
+            border-radius: 11px;
+            box-shadow: var(--shadow-1);
             overflow: hidden;
+            font-family: var(--font-mono);
+            font-size: 11px;
             pointer-events: none;
             user-select: none;
-            width: 220px;
-            /* 展开后的托盘尺寸是布局算出来的，边框必须算在 width/height 里，
-               否则卡片会比 cytoscape 的节点大一圈，节点从边框底下露出来 */
             box-sizing: border-box;
         }
 
-        /* 展开后的容器：卡片自己长大成托盘，子节点排在内部。
-           背景必须透明 —— 子节点是画在 canvas 上的，而卡片整层 DOM 盖在 canvas 之上，
-           一旦托盘有底色，内部的子节点就全被糊住了。嵌套关系靠边框和标题表达。 */
+        /*  —— 标题条 ——  */
+        .mermaid-header {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            padding: 6px 9px;
+            background: var(--accent-soft);
+            border-bottom: 1px solid var(--accent-border);
+            color: var(--accent-ink);
+        }
+
+        .mermaid-glyph {
+            flex: none;
+            width: 16px;
+            height: 16px;
+            border-radius: 5px;
+            background: var(--accent);
+            color: #fff;
+            font: 700 9px/16px var(--font-ui);
+            text-align: center;
+            letter-spacing: 0;
+            box-shadow: 0 1px 2px rgba(16, 24, 40, .18);
+        }
+
+        .mermaid-chev {
+            flex: none;
+            color: var(--accent);
+            opacity: .75;
+            transition: transform .18s;
+        }
+
+        .mermaid-card.tray .mermaid-chev { transform: rotate(90deg); }
+
+        .mermaid-title {
+            flex: 1;
+            min-width: 0;
+            font-family: var(--font-ui);
+            font-size: 12px;
+            font-weight: 650;
+            letter-spacing: .2px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .mermaid-count {
+            flex: none;
+            font-family: var(--font-ui);
+            font-size: 10px;
+            font-weight: 600;
+            color: var(--accent-ink);
+            background: var(--surface);
+            border: 1px solid var(--accent-border);
+            border-radius: 999px;
+            padding: 1px 6px;
+            opacity: .95;
+        }
+
+        /*  —— 托盘（展开后的容器）——  */
         .mermaid-card.tray {
             background: transparent;
-            border-radius: 7px;
             box-shadow: none;
+            border-width: 1.5px;
+            border-radius: 12px;
         }
 
+            /*  托盘标题条自带底色，但托盘本身透明：
+                展开 = 卡片长大成容器，子节点排在里面，靠边框表达「谁属于谁」。 */
             .mermaid-card.tray > .mermaid-header {
-                text-align: left;
-                padding-left: 12px;
+                border-bottom: 1px solid var(--accent-border);
             }
 
-            .mermaid-card.tray.ns {
-                border-width: 2px;
-            }
-
-        .mermaid-header {
-            padding: 5px 10px;
-            color: #ffffff;
-            font-weight: 700;
-            text-align: center;
-            font-size: 12px;
-            letter-spacing: 0.3px;
-            white-space: nowrap;
-            overflow: hidden;
-            text-overflow: ellipsis;
+        .mermaid-card.ns.tray {
+            border-style: dashed;
         }
 
+        .mermaid-card.type-tray {
+            border-style: dashed;
+        }
+
+        /*  命名空间卡片：比类型高一档 —— 实底标题条 + 更重的阴影  */
+        .mermaid-card.ns {
+            border-radius: 12px;
+            box-shadow: var(--shadow-2);
+        }
+
+            .mermaid-card.ns > .mermaid-header {
+                background: linear-gradient(135deg, var(--accent), var(--accent-deep, var(--accent)));
+                border-bottom-color: transparent;
+                color: #fff;
+                padding: 7px 10px;
+            }
+
+            .mermaid-card.ns .mermaid-glyph {
+                background: rgba(255, 255, 255, .22);
+                box-shadow: none;
+            }
+
+            .mermaid-card.ns .mermaid-chev { color: rgba(255, 255, 255, .85); }
+
+            .mermaid-card.ns .mermaid-count {
+                background: rgba(255, 255, 255, .18);
+                border-color: rgba(255, 255, 255, .28);
+                color: #fff;
+            }
+
+            .mermaid-card.ns > .mermaid-header .mermaid-title { font-size: 12.5px; }
+
+        /*  —— 正文 ——  */
         .mermaid-section {
-            padding: 4px 10px 5px;
-            border-top: 1px solid #ededed;
+            padding: 5px 10px 6px;
         }
+
+            .mermaid-section + .mermaid-section {
+                border-top: 1px solid var(--divider);
+            }
 
         .mermaid-line {
-            color: #333;
-            line-height: 1.45;
+            color: var(--ink-2);
+            line-height: 1.6;
             white-space: nowrap;
             overflow: hidden;
             text-overflow: ellipsis;
         }
 
-            .mermaid-line + .mermaid-line {
-                margin-top: 1px;
-            }
+            .mermaid-line.strong { color: var(--ink); }
+
+            .mermaid-line + .mermaid-line { margin-top: 0; }
+
+        .mermaid-line .dim { color: var(--ink-3); }
 
         .mermaid-empty {
-            color: #bbb;
+            color: var(--ink-3);
             font-style: italic;
             font-size: 10px;
         }
 
-        /* 命名空间卡片：更矮更宽，视觉上比类型高一档 */
-        .mermaid-card.ns {
-            border-width: 2px;
-            box-shadow: 0 3px 10px rgba(0,0,0,0.14);
+        .mermaid-hint {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            color: var(--ink-3);
+            font-family: var(--font-ui);
+            font-size: 10px;
+            padding: 5px 10px 6px;
+            border-top: 1px solid var(--divider);
         }
 
-            .mermaid-card.ns .mermaid-header {
-                font-size: 13px;
-                padding: 7px 10px;
+        /*  选中 / 悬停：状态由卡片模板写类名（见 app.js 的 cardAttrs）。
+            卡片整层 pointer-events:none，:hover 伪类根本不会命中，只能这么写。  */
+        .mermaid-card.selected {
+            border-color: var(--accent);
+            border-style: solid;
+            box-shadow: 0 0 0 2px var(--accent-soft), var(--shadow-2);
+        }
+
+        .mermaid-card.hovered {
+            border-color: var(--accent);
+            box-shadow: 0 8px 22px -8px rgba(15, 23, 42, .35), var(--shadow-1);
+        }
+
+        .mermaid-card.tray.hovered,
+        .mermaid-card.tray.selected {
+            border-style: solid;
+            box-shadow: 0 0 0 2px var(--accent-soft);
+        }
+
+        /*  ============================ 空状态 ============================ */
+        #welcome {
+            position: absolute;
+            inset: var(--toolbar-h) 0 0 0;
+            display: none;
+            place-items: center;
+            z-index: 12;
+            pointer-events: none;
+        }
+
+            #welcome.open { display: grid; }
+
+        .welcome-card {
+            pointer-events: auto;
+            width: min(460px, 82vw);
+            padding: 30px 32px 26px;
+            text-align: center;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            box-shadow: var(--shadow-3);
+            animation: rise .34s cubic-bezier(.2, .8, .2, 1);
+        }
+
+        @keyframes rise {
+            from { opacity: 0; transform: translateY(10px) scale(.99); }
+            to { opacity: 1; transform: none; }
+        }
+
+        .welcome-mark {
+            width: 46px;
+            height: 46px;
+            margin: 0 auto 14px;
+            border-radius: 14px;
+            display: grid;
+            place-items: center;
+            color: #fff;
+            background: linear-gradient(140deg, #5b8cff, #3d6df6 55%, #2f54d0);
+            box-shadow: 0 10px 24px -8px rgba(61, 109, 246, .75);
+        }
+
+        .welcome-card h1 {
+            margin: 0 0 6px;
+            font-size: 19px;
+            font-weight: 650;
+            letter-spacing: 2px;
+            color: var(--ink);
+        }
+
+        .welcome-card p {
+            margin: 0 0 20px;
+            font-size: 12.5px;
+            line-height: 1.8;
+            color: var(--ink-2);
+        }
+
+        .welcome-tips {
+            margin: 22px 0 0;
+            padding: 14px 0 0;
+            border-top: 1px solid var(--divider);
+            display: flex;
+            flex-direction: column;
+            gap: 7px;
+            text-align: left;
+            font-size: 11.5px;
+            color: var(--ink-2);
+        }
+
+        .welcome-tips .row { display: flex; align-items: center; gap: 8px; }
+
+        .welcome-tips .num {
+            flex: none;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: var(--brand-soft);
+            color: var(--brand);
+            font: 600 10px/18px var(--font-ui);
+            text-align: center;
+        }
+
+        /*  ============================ 帮助浮层 ============================ */
+        #help {
+            position: absolute;
+            inset: 0;
+            z-index: 40;
+            display: none;
+            place-items: center;
+            background: rgba(15, 23, 42, .32);
+            backdrop-filter: blur(3px);
+            -webkit-backdrop-filter: blur(3px);
+        }
+
+            #help.open { display: grid; animation: fade .16s; }
+
+        @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+
+        .help-card {
+            width: min(760px, 88vw);
+            max-height: 82vh;
+            overflow-y: auto;
+            padding: 22px 26px 20px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: 18px;
+            box-shadow: var(--shadow-3);
+        }
+
+        .help-head {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 4px;
+        }
+
+            .help-head h2 { margin: 0; font-size: 15px; font-weight: 650; color: var(--ink); }
+            .help-head .sub { font-size: 11.5px; color: var(--ink-3); }
+            .help-head .icon-btn { margin-left: auto; }
+
+        .help-cols {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px 26px;
+            margin-top: 16px;
+        }
+
+        .help-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 5px 0;
+            font-size: 12px;
+            color: var(--ink-2);
+        }
+
+        .help-row .keys {
+            flex: none;
+            min-width: 92px;
+            display: flex;
+            gap: 4px;
+            align-items: center;
+        }
+
+        .help-foot {
+            margin-top: 18px;
+            padding-top: 14px;
+            border-top: 1px solid var(--divider);
+            font-size: 11px;
+            color: var(--ink-3);
+            display: flex;
+            gap: 8px;
+            align-items: center;
+        }
+
+        /*  ============================ 菜单 ============================ */
+        .menu-wrap { position: relative; }
+
+        .menu {
+            position: absolute;
+            top: calc(100% + 7px);
+            right: 0;
+            min-width: 168px;
+            padding: 5px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-m);
+            box-shadow: var(--shadow-3);
+            display: none;
+            z-index: 2;
+        }
+
+            .menu.open { display: block; animation: fade .14s; }
+
+            .menu button {
+                display: flex;
+                align-items: center;
+                gap: 9px;
+                width: 100%;
+                height: 30px;
+                padding: 0 9px;
+                border-radius: var(--radius-s);
+                color: var(--ink-2);
+                font-size: 12px;
+                text-align: left;
             }
 
-        .mermaid-hint {
-            color: #98a2b3;
-            font-size: 10px;
-            padding: 2px 10px 4px;
-            border-top: 1px solid #f2f3f5;
+                .menu button:hover { background: var(--brand-soft); color: var(--brand); }
+
+                .menu button .ext { margin-left: auto; color: var(--ink-3); font-size: 10px; font-family: var(--font-mono); }
+
+        /*  ============================ 状态栏文本 ============================ */
+        .stats {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 10.5px;
+            color: var(--ink-3);
+            font-family: var(--font-mono);
+            white-space: nowrap;
+            overflow: hidden;
+            max-width: 46vw;
+            cursor: default;
         }
 
-        .mermaid-line .dim {
-            color: #9aa4b2;
+        .stats .pill {
+            padding: 3px 8px;
+            border-radius: 999px;
+            background: var(--surface-3);
+            border: 1px solid var(--border);
+            color: var(--ink-2);
+        }
+
+        .stats .pill.hot { color: var(--brand); background: var(--brand-soft); border-color: transparent; }
+
+        .stats .sep {
+            color: var(--border-strong);
+            font-size: 11px;
+        }
+
+        @media (max-width: 1180px) {
+            #stats { display: none; }
         }
     </style>
 </head>
 <body>
+    <!--  ============================ 顶部工具条 ============================ -->
     <div id="toolbar">
-        <span class="brand">码图</span>
-        <button id="modeBtn" class="primary" title="切换首屏聚合层级">聚合：命名空间</button>
-        <button id="expandBtn" title="展开当前可见的一层">展开一层</button>
-        <button id="collapseBtn" title="折叠全部（保留相机）">全部折叠</button>
-        <span class="divider"></span>
-        <input id="search" type="search" placeholder="搜索类型 / 命名空间 / 方法（/ 聚焦）" autocomplete="off">
-        <span class="divider"></span>
-        <select id="traceDir" title="追踪方向">
-            <option value="out">向下游</option>
-            <option value="in">向上游</option>
-        </select>
-        <select id="traceDepth" title="追踪深度">
-            <option value="1">1 层</option>
-            <option value="2">2 层</option>
-            <option value="3" selected>3 层</option>
-            <option value="4">4 层</option>
-            <option value="5">5 层</option>
-        </select>
-        <button id="traceBtn" title="从当前选中的节点追踪调用链（也可右键节点）">调用链</button>
-        <span class="divider"></span>
-        <button id="exportPng" title="导出当前视图为 PNG">PNG</button>
-        <button id="exportMermaid" title="导出当前视图为 mermaid 文本">Mermaid</button>
-        <button id="exportJson" title="导出当前视图为 JSON">JSON</button>
+        <div class="brand" title="码图 · C# 代码骨架图">
+            <span class="brand-mark" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="6" cy="6" r="2.6"></circle>
+                    <circle cx="18" cy="9" r="2.6"></circle>
+                    <circle cx="9" cy="18" r="2.6"></circle>
+                    <path d="M8.3 7.4l7.4 1.3M7.3 8.6l1.4 6.9M16.4 10.9l-5.9 5.6"></path>
+                </svg>
+            </span>
+            <span class="brand-name">码图</span>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="group">
+            <button id="modeBtn" class="btn" title="切换首屏聚合层级：命名空间 / 类型">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <rect x="3" y="3" width="7" height="7" rx="1.6"></rect>
+                    <rect x="14" y="14" width="7" height="7" rx="1.6"></rect>
+                    <path d="M10 6.5h4a3 3 0 013 3v4"></path>
+                </svg>
+                <span id="modeLabel">聚合：命名空间</span>
+            </button>
+            <button id="expandBtn" class="btn" title="展开当前可见的一层">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M7 4h10M7 20h10M12 9v6M9.5 11.5L12 9l2.5 2.5M9.5 12.5L12 15l2.5-2.5"></path>
+                </svg>
+                展开一层
+            </button>
+            <button id="collapseBtn" class="btn" title="折叠全部（Esc，保留相机）">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M4 8V6a2 2 0 012-2h2M20 8V6a2 2 0 00-2-2h-2M4 16v2a2 2 0 002 2h2M20 16v2a2 2 0 01-2 2h-2"></path>
+                </svg>
+                全部折叠
+            </button>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="search" id="searchWrap">
+            <svg class="search-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="11" cy="11" r="7"></circle>
+                <path d="M16.5 16.5L21 21"></path>
+            </svg>
+            <input id="search" type="search" placeholder="搜索类型 / 命名空间 / 方法" autocomplete="off" spellcheck="false">
+            <button id="searchClear" class="search-clear" title="清空（Esc）" hidden>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2.6" stroke-linecap="round">
+                    <path d="M6 6l12 12M18 6L6 18"></path>
+                </svg>
+            </button>
+            <kbd class="search-kbd">/</kbd>
+            <div id="results"></div>
+        </div>
+
+        <div class="divider"></div>
+
+        <div class="group">
+            <select id="traceDir" title="追踪方向">
+                <option value="out">向下游</option>
+                <option value="in">向上游</option>
+            </select>
+            <select id="traceDepth" title="追踪深度">
+                <option value="1">1 层</option>
+                <option value="2">2 层</option>
+                <option value="3" selected>3 层</option>
+                <option value="4">4 层</option>
+                <option value="5">5 层</option>
+            </select>
+            <button id="traceBtn" class="btn" title="从选中的节点追踪调用链（T，或右键节点）">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="6" cy="6" r="2.4"></circle>
+                    <circle cx="18" cy="18" r="2.4"></circle>
+                    <path d="M8.4 6H14a3 3 0 013 3v1a3 3 0 01-3 3H10a3 3 0 00-3 3v1"></path>
+                </svg>
+                调用链
+            </button>
+        </div>
+
         <span class="spacer"></span>
-        <span id="stats"></span>
+
+        <span id="stats" class="stats"></span>
+
+        <div class="group">
+            <div class="menu-wrap" id="exportWrap">
+                <button id="exportBtn" class="icon-btn" title="导出当前视图">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 3v12M7.5 10.5L12 15l4.5-4.5M4 19h16"></path>
+                    </svg>
+                </button>
+                <div class="menu" id="exportMenu">
+                    <button id="exportPng">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="4" width="18" height="16" rx="2.5"></rect>
+                            <circle cx="8.5" cy="9.5" r="1.6"></circle>
+                            <path d="M20 16l-5-5-6 6"></path>
+                        </svg>
+                        导出 PNG 图片
+                        <span class="ext">.png</span>
+                    </button>
+                    <button id="exportMermaid">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M12 3v6M6 21v-6M18 21v-6M6 15h12M12 9l6 6M12 9l-6 6"></path>
+                        </svg>
+                        导出 Mermaid 文本
+                        <span class="ext">.mmd</span>
+                    </button>
+                    <button id="exportJson">
+                        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                             stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M9 3H6a3 3 0 00-3 3v12a3 3 0 003 3h3M15 3h3a3 3 0 013 3v12a3 3 0 01-3 3h-3"></path>
+                            <path d="M13 8l-3 4 3 4"></path>
+                        </svg>
+                        导出 JSON 数据
+                        <span class="ext">.json</span>
+                    </button>
+                </div>
+            </div>
+            <button id="reloadBtn" class="icon-btn" title="重新分析当前项目">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M20 11a8 8 0 10-1.6 5.6"></path>
+                    <path d="M20 5v6h-6"></path>
+                </svg>
+            </button>
+            <button id="themeBtn" class="icon-btn" title="切换浅色 / 深色主题">
+                <svg id="themeIconLight" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="4.2"></circle>
+                    <path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M19.1 4.9l-1.8 1.8M6.7 17.3l-1.8 1.8"></path>
+                </svg>
+                <svg id="themeIconDark" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:none">
+                    <path d="M20 14.5A8.5 8.5 0 019.5 4a8.5 8.5 0 1010.5 10.5z"></path>
+                </svg>
+            </button>
+            <button id="helpBtn" class="icon-btn" title="快捷键与使用说明（?）">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="9"></circle>
+                    <path d="M9.6 9.2a2.5 2.5 0 114 2.6c-.9.7-1.6 1.1-1.6 2.2"></path>
+                    <path d="M12 17.2h.01"></path>
+                </svg>
+            </button>
+        </div>
     </div>
 
-    <div id="results"></div>
-
-    <div id="focusBar">
-        <span id="focusLabel"></span>
-        <button id="focusClear">退出聚焦 (Esc)</button>
-    </div>
+    <div id="progress"></div>
 
     <div id="cy"></div>
-    <div id="hint">等待加载...</div>
 
-    <div id="legend">
-        <div><span class="swatch" style="border-color:#e76f51"></span>继承 / 实现</div>
-        <div><span class="swatch" style="border-color:#4c8dff"></span>类型级调用</div>
-        <div><span class="swatch" style="border-color:#8c9298"></span>方法级调用</div>
-        <div><span class="swatch" style="border-color:#c2c9d2;border-top-style:dashed"></span>嵌套归属</div>
+    <!--  ============================ 浮动层 ============================ -->
+    <div id="crumbs" class="float"></div>
+
+    <div id="focusBar" class="float">
+        <svg class="lens" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="11" cy="11" r="7"></circle>
+            <path d="M16.5 16.5L21 21"></path>
+        </svg>
+        <span id="focusLabel"></span>
+        <button id="focusClear" class="btn" title="退出聚焦（Esc）">退出</button>
+    </div>
+
+    <div id="legend" class="float">
+        <button class="legend-head" id="legendToggle" title="折叠 / 展开图例">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 6h16M4 12h16M4 18h10"></path>
+            </svg>
+            图例
+            <svg class="chev" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M6 9l6 6 6-6"></path>
+            </svg>
+        </button>
+        <div class="legend-body" id="legendBody"></div>
+    </div>
+
+    <div id="zoomDock" class="float">
+        <button id="zoomOut" title="缩小（-）">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.4" stroke-linecap="round"><path d="M6 12h12"></path></svg>
+        </button>
+        <button id="zoomValue" class="zoom-value" title="重置为 100%">100%</button>
+        <button id="zoomIn" title="放大（+）">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.4" stroke-linecap="round"><path d="M12 6v12M6 12h12"></path></svg>
+        </button>
+        <span class="sep-dot"></span>
+        <button id="zoomFit" title="适配全部并清掉拖动位移（0）">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M4 9V5h4M20 9V5h-4M4 15v4h4M20 15v4h-4"></path>
+            </svg>
+        </button>
+    </div>
+
+    <div id="hint"></div>
+
+    <div id="welcome">
+        <div class="welcome-card">
+            <div class="welcome-mark">
+                <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="6" cy="6" r="2.6"></circle>
+                    <circle cx="18" cy="9" r="2.6"></circle>
+                    <circle cx="9" cy="18" r="2.6"></circle>
+                    <path d="M8.3 7.4l7.4 1.3M7.3 8.6l1.4 6.9M16.4 10.9l-5.9 5.6"></path>
+                </svg>
+            </div>
+            <h1>码图</h1>
+            <p>把 C# 项目里的类型与方法依赖画成一张会自己更新的图。<br>选一个项目目录就能开始。</p>
+            <button id="welcomeOpen" class="btn primary" style="height:34px;padding:0 18px;font-size:13px;">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M3 7.5A2 2 0 015 5.5h3.6a2 2 0 011.5.7l1 1.2H19a2 2 0 012 2v7.1a2 2 0 01-2 2H5a2 2 0 01-2-2z"></path>
+                </svg>
+                打开项目…
+            </button>
+            <div class="welcome-tips">
+                <div class="row"><span class="num">1</span><span>首屏只画命名空间，单击卡片就地长大成托盘</span></div>
+                <div class="row"><span class="num">2</span><span>托盘里的类型点开后，方法芯片排在卡片内部</span></div>
+                <div class="row"><span class="num">3</span><span>拖动卡片带着子节点走，<kbd>0</kbd> 复位全部位移</span></div>
+            </div>
+        </div>
+    </div>
+
+    <div id="help">
+        <div class="help-card">
+            <div class="help-head">
+                <h2>快捷键与操作</h2>
+                <span class="sub">编辑器里改完源码，图会在保存后自动刷新</span>
+                <button id="helpClose" class="icon-btn" title="关闭（Esc）">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                         stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+                </button>
+            </div>
+            <div class="help-cols" id="helpRows"></div>
+            <div class="help-foot">
+                <span>外壳 WinUI 3 + WebView2</span>
+                <span>·</span>
+                <span>分析 Roslyn（L1 语法 / L2 语义）</span>
+                <span>·</span>
+                <span>渲染 Cytoscape.js</span>
+            </div>
+        </div>
     </div>
 
     <script>
+        // 页面里的任何脚本错误都要能被看见：探针读 window.__errors，
+        // 用户则直接看到底部那条红色通知。
         window.__errors = [];
         window.onerror = function (msg, src, line, col) {
             window.__errors.push(msg + ' @ ' + (src || '?') + ':' + line + ':' + col);
             var h = document.getElementById('hint');
-            if (h) { h.className = 'err'; h.textContent = 'JS 错误: ' + msg; }
+            if (h) { h.className = 'err show'; h.textContent = 'JS 错误: ' + msg; }
         };
     </script>
 

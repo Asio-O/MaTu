@@ -10,7 +10,29 @@
                 <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
                 <!-- Other merged dictionaries here -->
             </ResourceDictionary.MergedDictionaries>
-            <!-- Other app resources here -->
+
+            <!--
+                标题栏那条底的颜色。窗口内容延伸进了标题栏（ExtendsContentIntoTitleBar），
+                所以这一条是我们自己画的，要跟页面底色对齐：
+                值就是 wwwroot/index.html 里那对底色变量。
+                放在 ThemeDictionaries 里，宿主只要改根元素的 RequestedTheme，
+                这里就会自动换成另一套 —— 不需要在代码里手动 Set 画刷。
+                Default 是兜底（高对比度主题找不到对应字典时会落到它）。
+            -->
+            <ResourceDictionary.ThemeDictionaries>
+                <ResourceDictionary x:Key="Default">
+                    <SolidColorBrush x:Key="AppTitleBandBrush" Color="#F4F6F9" />
+                    <SolidColorBrush x:Key="AppTitleBandBorderBrush" Color="#E4E8EF" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Light">
+                    <SolidColorBrush x:Key="AppTitleBandBrush" Color="#F4F6F9" />
+                    <SolidColorBrush x:Key="AppTitleBandBorderBrush" Color="#E4E8EF" />
+                </ResourceDictionary>
+                <ResourceDictionary x:Key="Dark">
+                    <SolidColorBrush x:Key="AppTitleBandBrush" Color="#0E131C" />
+                    <SolidColorBrush x:Key="AppTitleBandBorderBrush" Color="#273143" />
+                </ResourceDictionary>
+            </ResourceDictionary.ThemeDictionaries>
         </ResourceDictionary>
     </Application.Resources>
 </Application>

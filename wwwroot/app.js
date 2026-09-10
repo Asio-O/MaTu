@@ -18,34 +18,247 @@
     const hint = document.getElementById('hint');
     const statsEl = document.getElementById('stats');
     const modeBtn = document.getElementById('modeBtn');
+    const modeLabel = document.getElementById('modeLabel');
     const searchEl = document.getElementById('search');
+    const searchWrap = document.getElementById('searchWrap');
+    const searchClearBtn = document.getElementById('searchClear');
     const resultsEl = document.getElementById('results');
     const focusBar = document.getElementById('focusBar');
     const focusLabel = document.getElementById('focusLabel');
     const focusClear = document.getElementById('focusClear');
     const traceDirEl = document.getElementById('traceDir');
     const traceDepthEl = document.getElementById('traceDepth');
+    const crumbsEl = document.getElementById('crumbs');
+    const progressEl = document.getElementById('progress');
+    const welcomeEl = document.getElementById('welcome');
+    const welcomeOpenBtn = document.getElementById('welcomeOpen');
+    const legendEl = document.getElementById('legend');
+    const legendBody = document.getElementById('legendBody');
+    const legendToggle = document.getElementById('legendToggle');
+    const helpEl = document.getElementById('help');
+    const helpRows = document.getElementById('helpRows');
+    const helpBtn = document.getElementById('helpBtn');
+    const exportWrap = document.getElementById('exportWrap');
+    const exportMenu = document.getElementById('exportMenu');
+    const zoomValueEl = document.getElementById('zoomValue');
+    const themeBtn = document.getElementById('themeBtn');
+    const themeIconLight = document.getElementById('themeIconLight');
+    const themeIconDark = document.getElementById('themeIconDark');
 
-    function setHint(text, isErr) {
-        hint.className = isErr ? 'err' : '';
-        hint.textContent = text;
+    // ================================================================
+    //  主题
+    // ================================================================
+
+    /*
+     * 配色只有这一张表。它同时喂三个地方：
+     *   1. 写成 CSS 变量挂到 <html> 上 —— 工具条、浮层、卡片样式全用 var(--…)
+     *   2. TYPE_COLORS / EDGE_COLOR —— cytoscape 样式、卡片模板、导出重绘取它
+     *   3. 图例 —— 直接从同一份表渲染，改色不用再找第二处
+     * 深浅两套同名同结构，切主题就是换一张表。
+     */
+    const THEMES = {
+        light: {
+            dark: false,
+            surface: '#ffffff',
+            pngBg: '#f4f6f9',
+            kinds: {
+                namespace: '#5b6b7f', class: '#3b82f6', interface: '#0f9d76',
+                struct: '#d98411', record: '#8b5cf6', type: '#94a3b8',
+            },
+            edges: {
+                inherits: '#f43f5e', nsInherits: '#f43f5e',
+                typeCalls: '#3b82f6', nsCalls: '#3b82f6',
+                typeContains: '#cbd5e1', calls: '#94a3b8',
+            },
+            vars: {
+                '--bg': '#f4f6f9',
+                '--grid': 'rgba(15, 23, 42, .05)',
+                '--surface': '#ffffff',
+                '--surface-2': 'rgba(255, 255, 255, .82)',
+                '--surface-3': '#f4f6fa',
+                '--border': '#e4e8ef',
+                '--border-strong': '#d3dae4',
+                '--divider': '#edf0f5',
+                '--ink': '#131a26',
+                '--ink-2': '#4a5568',
+                '--ink-3': '#8792a2',
+                '--brand': '#3d6df6',
+                '--brand-soft': 'rgba(61, 109, 246, .10)',
+                '--brand-ink': '#ffffff',
+                '--danger': '#e5484d',
+                '--danger-soft': 'rgba(229, 72, 77, .12)',
+                '--ok': '#12a594',
+                '--shadow-1': '0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .05)',
+                '--shadow-2': '0 6px 16px -4px rgba(16, 24, 40, .12), 0 14px 32px -16px rgba(16, 24, 40, .24)',
+                '--shadow-3': '0 24px 64px -20px rgba(16, 24, 40, .40)',
+                '--ring': '0 0 0 3px rgba(61, 109, 246, .28)',
+            },
+        },
+        dark: {
+            dark: true,
+            surface: '#161d29',
+            pngBg: '#0e131c',
+            kinds: {
+                namespace: '#94a3b8', class: '#60a5fa', interface: '#34d399',
+                struct: '#fbbf24', record: '#a78bfa', type: '#64748b',
+            },
+            edges: {
+                inherits: '#fb7185', nsInherits: '#fb7185',
+                typeCalls: '#60a5fa', nsCalls: '#60a5fa',
+                typeContains: '#33415a', calls: '#64748b',
+            },
+            vars: {
+                '--bg': '#0e131c',
+                '--grid': 'rgba(255, 255, 255, .035)',
+                '--surface': '#161d29',
+                '--surface-2': 'rgba(19, 26, 38, .82)',
+                '--surface-3': '#1b2431',
+                '--border': '#273143',
+                '--border-strong': '#35415a',
+                '--divider': '#212b3b',
+                '--ink': '#e8edf6',
+                '--ink-2': '#a9b4c6',
+                '--ink-3': '#6f7c92',
+                '--brand': '#6b8dff',
+                '--brand-soft': 'rgba(107, 141, 255, .16)',
+                '--brand-ink': '#0b1020',
+                '--danger': '#ff6b6b',
+                '--danger-soft': 'rgba(255, 107, 107, .16)',
+                '--ok': '#3ecfb2',
+                '--shadow-1': '0 1px 2px rgba(0, 0, 0, .45)',
+                '--shadow-2': '0 8px 20px -6px rgba(0, 0, 0, .55), 0 18px 44px -22px rgba(0, 0, 0, .80)',
+                '--shadow-3': '0 28px 72px -24px rgba(0, 0, 0, .85)',
+                '--ring': '0 0 0 3px rgba(107, 141, 255, .30)',
+            },
+        },
+    };
+
+    const THEME_KEY = 'matu.theme';
+
+    /** 显式选过就听用户的，否则跟随系统。 */
+    function resolveInitialTheme() {
+        let saved = null;
+        try { saved = localStorage.getItem(THEME_KEY); } catch (_) { /* 无存储权限就用系统值 */ }
+        if (saved === 'light' || saved === 'dark') return saved;
+        return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+            ? 'dark' : 'light';
     }
+
+    let themeName = resolveInitialTheme();
+    function theme() { return THEMES[themeName]; }
+
+    // 可变引用：切主题时就地改这张表，所有拿着它的人自动跟着变
+    const TYPE_COLORS = Object.assign({}, THEMES.light.kinds);
+    const EDGE_COLOR = Object.assign({}, THEMES.light.edges);
+
+    /** 两色按比例混合，返回 rgb()。用来看得住深色底上的标题/描边。 */
+    function mix(a, b, t) {
+        const pa = hexTriplet(a), pb = hexTriplet(b);
+        if (!pa || !pb) return a;
+        const c = i => Math.round(pa[i] + (pb[i] - pa[i]) * t);
+        return `rgb(${c(0)}, ${c(1)}, ${c(2)})`;
+    }
+
+    function hexTriplet(s) {
+        let h = String(s).trim().replace(/^#/, '');
+        if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+        if (!/^[0-9a-fA-F]{6}$/.test(h)) return null;
+        return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
+    }
+
+    /**
+     * 卡片的四个派生色。放在内联样式里而不是 CSS 里算：
+     * color-mix() 要 WebView2 141+，而这里必须能跑在任何一台装了 WebView2 的机器上。
+     */
+    function accentVars(accent) {
+        const t = theme();
+        return `--accent:${accent};` +
+            `--accent-deep:${mix(accent, '#000000', t.dark ? 0.30 : 0.20)};` +
+            // 后两个数都是「往底色里掺多少」：掺得多才是淡底，掺得少是描边
+            `--accent-soft:${mix(accent, t.surface, t.dark ? 0.80 : 0.88)};` +
+            `--accent-border:${mix(accent, t.surface, t.dark ? 0.55 : 0.68)};` +
+            `--accent-ink:${mix(accent, t.dark ? '#ffffff' : '#0b1020', 0.30)};`;
+    }
+
+    /** 把主题写进 DOM 变量 + 两张颜色表。不碰需要重建的东西（那是 setTheme 的事）。 */
+    function applyThemeVars(name) {
+        themeName = THEMES[name] ? name : 'light';
+        const t = theme();
+        const root = document.documentElement;
+        root.setAttribute('data-theme', themeName);
+        for (const k in t.vars) root.style.setProperty(k, t.vars[k]);
+        Object.assign(TYPE_COLORS, t.kinds);
+        Object.assign(EDGE_COLOR, t.edges);
+
+        if (themeIconLight) themeIconLight.style.display = t.dark ? 'none' : '';
+        if (themeIconDark) themeIconDark.style.display = t.dark ? '' : 'none';
+        if (themeBtn) themeBtn.title = t.dark ? '切换到浅色主题' : '切换到深色主题';
+        renderLegend();
+    }
+
+    // ================================================================
+    //  通知 / 进度
+    // ================================================================
+
+    let hintTimer = null;
+
+    /*
+     * 提示条。原来的版本把提示当常驻文字挂在左上角，一屏幕都是操作说明；
+     * 现在当 toast 用：出现几秒自己退场，只有错误的 textContent 会留着
+     * （探针的 snapshotSummary() 会读它，所以隐藏靠 class 而不是清空）。
+     */
+    function setHint(text, isErr) {
+        clearTimeout(hintTimer);
+        if (!text) { hint.classList.remove('show'); return; }
+        hint.textContent = text;
+        hint.className = (isErr ? 'err ' : '') + 'show';
+        hintTimer = setTimeout(() => hint.classList.remove('show'), isErr ? 9000 : 3400);
+    }
+
+    /** 顶部那条细进度条：L2 解析这类「正在忙」的时刻。 */
+    function setBusy(on) {
+        if (progressEl) progressEl.classList.toggle('on', !!on);
+    }
+
+    // —— 图例与快捷键说明的数据表 ——
+    // 放在主题表旁边：它们只描述「界面上要展示什么」，渲染逻辑在文件后半段。
+    const LEGEND_KINDS = [
+        ['class', '类'], ['interface', '接口'], ['struct', '结构'],
+        ['record', '记录'], ['namespace', '命名空间'],
+    ];
+    const LEGEND_EDGES = [
+        ['inherits', '继承 / 实现', 2.2, false],
+        ['typeCalls', '类型级调用', 1.8, false],
+        ['calls', '方法级调用', 1.0, false],
+        ['typeContains', '嵌套归属', 1.2, true],
+    ];
+    const HELP_ROWS = [
+        [['/'], '聚焦搜索框'],
+        [['↑', '↓', 'Enter'], '在搜索结果里选择并定位'],
+        [['T'], '对选中节点追踪调用链'],
+        [['0'], '适配全部，并清掉手动拖动'],
+        [['F'], '适配全部'],
+        [['+', '-'], '放大 / 缩小'],
+        [['单击卡片'], '命名空间 / 类型就地长成托盘，子节点排到卡片里'],
+        [['双击容器'], '把它下面的容器一层层一起展开'],
+        [['单击方法'], '在编辑器里跳到这个方法的源码'],
+        [['拖动卡片'], '整块一起走，松手后停在拖到的位置'],
+        [['右键节点'], '按工具栏的方向与深度追踪调用链'],
+        [['双击空白'], '折叠全部并退出聚焦'],
+        [['Esc'], '退出聚焦 / 折叠全部'],
+        [['?'], '打开这张说明'],
+        [['F12'], '打开开发者工具'],
+    ];
+
+    // 先把主题落到 DOM 上：cytoscape 的样式表紧跟着就要按当前配色构建
+    applyThemeVars(themeName);
 
     if (typeof cytoscape === 'undefined') {
         setHint('cytoscape.min.js 未加载', true);
         return;
     }
 
-    const TYPE_COLORS = {
-        namespace: '#5b6b7f',
-        class: '#4c8dff',
-        interface: '#2a9d8f',
-        struct: '#f4a261',
-        record: '#e76f51',
-        type: '#888888',
-    };
-
-    const CARD_WIDTH = 220;
+    const CARD_WIDTH = 232;
 
     const ANIM = {
         growDuration: 420,
@@ -92,6 +305,16 @@
         return Math.max(46, Math.ceil(measureLabelWidth(n.label)) + BOX.chipPadX);
     }
 
+    /** 方法芯片的底色/悬停底色与字色：跟着主题和父类型的主色走。 */
+    function chipColors(color) {
+        const t = theme();
+        return {
+            ink: t.dark ? '#dbe3f0' : '#33475b',
+            chipBg: mix(color, t.surface, t.dark ? 0.86 : 0.93),
+            chipHover: mix(color, t.surface, t.dark ? 0.66 : 0.80),
+        };
+    }
+
     // 各类边的目标透明度
     const EDGE_OPACITY = {
         inherits: 0.95,
@@ -117,60 +340,88 @@
      *   叶子卡：宽度固定，高度由内容撑开 —— 折叠的命名空间/类型就是这种
      *   托盘：  宽高都由布局算好后写死，正文留空 —— 子节点是独立的 cytoscape 节点，
      *          排在托盘内部，卡片只负责画个框和标题
+     *
+     * 注意「选中 / 悬停」这两个状态是写进模板的，不是在 DOM 上加类：
+     * cytoscape-node-html-label 每次收到 data / style 事件都会重建卡片节点，
+     * 加在外面的类会被下一次重建抹掉，只有走 data 才能活到下一次渲染。
      */
-    function cardShell(kindClass, color, label, bodyHtml, data) {
-        if (data.tray) {
-            const size = `width:${Math.round(data.w)}px;height:${Math.round(data.h)}px;`;
-            return `<div class="mermaid-card tray ${kindClass}" style="border-color:${color};${size}">
-      <div class="mermaid-header" style="background:${color};">${escapeHtml(label)}</div>
-    </div>`;
-        }
-        return `<div class="mermaid-card ${kindClass}" style="border-color:${color};">
-      <div class="mermaid-header" style="background:${color};">${escapeHtml(label)}</div>
-      ${bodyHtml}
-    </div>`;
+    const KIND_GLYPH = {
+        namespace: 'N', class: 'C', interface: 'I', struct: 'S', record: 'R', type: 'T',
+    };
+
+    const CHEVRON_SVG = '<svg class="mermaid-chev" width="10" height="10" viewBox="0 0 24 24" ' +
+        'fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="round" ' +
+        'stroke-linejoin="round"><path d="M9 5l7 7-7 7"></path></svg>';
+
+    /** 标题条：展开箭头 + 类型徽标 + 名字 + 子项计数。 */
+    function headerHtml(kind, label, count) {
+        return '<div class="mermaid-header">' + CHEVRON_SVG +
+            `<span class="mermaid-glyph">${KIND_GLYPH[kind] || 'T'}</span>` +
+            `<span class="mermaid-title">${escapeHtml(label)}</span>` +
+            (count ? `<span class="mermaid-count">${count}</span>` : '') +
+            '</div>';
+    }
+
+    function cardAttrs(color, kindClass, data) {
+        const cls = ['mermaid-card', kindClass, data.tray ? 'tray' : '',
+            data.selected ? 'selected' : '', data.hovered ? 'hovered' : ''].filter(Boolean).join(' ');
+        const size = data.tray
+            ? `width:${Math.round(data.w)}px;height:${Math.round(data.h)}px;` : '';
+        return `class="${cls}" style="${accentVars(color)}${size}"`;
     }
 
     function typeCardTpl(data) {
-        const color = data.color || '#4c8dff';
+        const color = data.color || TYPE_COLORS.class;
+        const kind = data.kind || 'type';
         const fields = data.fields || [];
         const methods = data.methods || [];
+        const count = data.tray
+            ? (data.childCount || 0)
+            : (fields.length + methods.length);
 
-        let sections = '';
+        // 托盘正文必须留空：子节点是画在 canvas 上的独立节点，排在这个框里面
+        if (data.tray) {
+            return `<div ${cardAttrs(color, 'type-tray', data)}>` +
+                headerHtml(kind, data.label, count) + '</div>';
+        }
+
+        let body = '';
         if (fields.length > 0) {
-            sections += '<div class="mermaid-section">';
-            for (const f of fields) sections += `<div class="mermaid-line">${escapeHtml(f)}</div>`;
-            sections += '</div>';
+            body += '<div class="mermaid-section">'
+                + fields.map(f => `<div class="mermaid-line">${escapeHtml(f)}</div>`).join('')
+                + '</div>';
         }
         if (methods.length > 0) {
-            sections += '<div class="mermaid-section">';
-            for (const m of methods) sections += `<div class="mermaid-line">${escapeHtml(m)}</div>`;
-            sections += '</div>';
+            body += '<div class="mermaid-section">'
+                + methods.map(m => `<div class="mermaid-line strong">${escapeHtml(m)}</div>`).join('')
+                + '</div>';
         }
-        if (!sections) {
-            sections = '<div class="mermaid-section"><div class="mermaid-line mermaid-empty">(空)</div></div>';
+        if (!body) {
+            body = '<div class="mermaid-section"><div class="mermaid-line mermaid-empty">（无成员）</div></div>';
         }
 
-        return cardShell('', color, data.label, sections, data);
+        return `<div ${cardAttrs(color, '', data)}>` + headerHtml(kind, data.label, count) + body + '</div>';
     }
 
     function nsCardTpl(data) {
-        const color = data.color || '#5b6b7f';
+        const color = data.color || TYPE_COLORS.namespace;
         const preview = data.preview || [];
-        let body = '';
-        if (preview.length) {
-            body = '<div class="mermaid-section">';
-            for (const line of preview) body += `<div class="mermaid-line dim">${escapeHtml(line)}</div>`;
-            body += '</div>';
+
+        if (data.tray) {
+            return `<div ${cardAttrs(color, 'ns', data)}>` +
+                headerHtml('namespace', data.label, data.childCount || 0) + '</div>';
         }
-        const tail = data.expanded
-            ? '<div class="mermaid-hint">展开中 · 点击折叠</div>'
-            : '<div class="mermaid-hint">点击展开类型</div>';
 
-        body = `<div class="mermaid-section"><div class="mermaid-line">${data.childCount} 个类型</div></div>`
-            + body + tail;
+        let body = `<div class="mermaid-section"><div class="mermaid-line strong">${data.childCount} 个类型</div>`;
+        for (const line of preview) {
+            body += `<div class="mermaid-line"><span class="dim">${escapeHtml(line)}</span></div>`;
+        }
+        body += '</div>';
+        body += '<div class="mermaid-hint">' +
+            (data.expanded ? '已展开 · 点击折叠' : '点击展开 · 类型排到卡片里') + '</div>';
 
-        return cardShell('ns', color, data.label, body, data);
+        return `<div ${cardAttrs(color, 'ns', data)}>` +
+            headerHtml('namespace', data.label, data.childCount || 0) + body + '</div>';
     }
 
     function estimateSize(n) {
@@ -202,6 +453,7 @@
         if (n.kind === 'namespace') {
             return {
                 label: n.label,
+                kind: 'namespace',
                 color: TYPE_COLORS.namespace,
                 childCount: n.childCount || 0,
                 preview: n.preview || [],
@@ -211,9 +463,11 @@
         }
         return {
             label: n.label,
-            color: TYPE_COLORS[n.kind] || '#888',
+            kind: n.kind,
+            color: TYPE_COLORS[n.kind] || TYPE_COLORS.type,
             fields: n.fields || [],
             methods: n.methods || [],
+            childCount: (state.childrenOf.get(n.id) || []).length,
             tray: n.tray ? 1 : 0, w: n.boxW || 0, h: n.boxH || 0,
         };
     }
@@ -244,72 +498,71 @@
     //  Cytoscape 实例
     // ================================================================
 
-    const cy = cytoscape({
-        container: document.getElementById('cy'),
-        wheelSensitivity: 0.3,
-        style: [
+    /*
+     * 样式表按当前主题现算。深色下如果沿用浅色那套线和字，画布会糊成一片灰，
+     * 所以切主题时整张表重建一次（见 setTheme）。
+     */
+    function buildStyle() {
+        const t = theme();
+        const e = t.edges;
+        return [
             {
                 selector: 'node[isType], node[isNs]',
                 style: {
                     width: 'data(w)',
                     height: 'data(h)',
                     // 卡片由 DOM 层绘制，节点本身必须完全不画。
-                    // 注意不能只写 background-color: transparent —— 这个 cytoscape 版本
+                    // 不能只写 background-color: transparent —— 这个 cytoscape 版本
                     // 填充背景时忽略颜色自带的 alpha，只看 background-opacity，
                     // 结果就是一整块纯黑矩形从卡片底下露出来。
                     'background-opacity': 0,
-                    'background-color': '#ffffff',
+                    'background-color': t.surface,
                     'border-width': 0,
                     'border-style': 'solid',
+                    'overlay-opacity': 0,
                     label: '',
                     shape: 'rectangle',
                 }
             },
             {
-                // cytoscape 没有 :hover 伪类，未知伪类会被当成恒真条件匹配所有节点。
-                // 悬停效果只能靠 JS 事件加类实现。
-                selector: 'node[isType].hovered, node[isNs].hovered',
-                style: {
-                    'border-width': 2,
-                    'border-color': '#1a1a1a',
-                    'border-style': 'dashed',
-                    'border-opacity': 0.5,
-                }
-            },
-            {
-                // 方法在展开后的类型托盘里是一枚芯片：圆角小方块 + 名字写在里面。
+                // 方法在展开后的类型托盘里是一枚芯片：圆角胶囊 + 主色描边 + 淡色底。
                 // 尺寸由 measureSize()/chipWidth() 算好放进 data(w)/data(h)，
                 // 字体族必须和 CHIP_FONT 一致，否则量出来的宽度对不上。
                 selector: 'node[isMethod]',
                 style: {
                     label: 'data(label)',
                     'font-family': 'Segoe UI, Microsoft YaHei, sans-serif',
-                    'font-size': 10, color: '#33475b',
+                    'font-size': 10, color: 'data(ink)',
                     'text-valign': 'center', 'text-halign': 'center',
                     'text-wrap': 'none',
                     shape: 'round-rectangle',
                     width: 'data(w)', height: 'data(h)',
-                    'background-color': '#ffffff',
+                    'background-color': 'data(chipBg)',
                     'background-opacity': 1,
-                    'border-width': 1.2, 'border-color': 'data(color)',
-                    'transition-property': 'background-color, border-width',
+                    'border-width': 1, 'border-color': 'data(color)',
+                    'transition-property': 'background-color, border-width, border-color, color',
                     'transition-duration': '150ms',
                 }
             },
             {
-                selector: 'node[isMethod].hovered',
+                // hovered / sel 走 data 而不是 class：卡片那层 DOM 会被
+                // cytoscape-node-html-label 按 data 重建，只有 data 上的状态活得下来。
+                selector: 'node[isMethod][hovered = 1]',
+                style: { 'background-color': 'data(chipHover)', 'border-width': 1.8, 'z-index': 998 }
+            },
+            {
+                selector: 'node[isMethod][sel = 1]',
                 style: {
-                    'background-color': '#eef4ff',
-                    'border-width': 2,
-                    'z-index': 999,
+                    'background-color': 'data(chipHover)', 'border-width': 2,
+                    'border-color': 'data(color)', 'z-index': 999,
                 }
             },
             {
                 selector: 'edge[kind="inherits"]',
                 style: {
                     'curve-style': 'bezier', width: 2.2,
-                    'line-color': '#e76f51',
-                    'target-arrow-color': '#e76f51',
+                    'line-color': e.inherits,
+                    'target-arrow-color': e.inherits,
                     'target-arrow-shape': 'triangle', 'arrow-scale': 1.1,
                 }
             },
@@ -317,9 +570,9 @@
                 selector: 'edge[kind="nsInherits"]',
                 style: {
                     'curve-style': 'bezier', width: 2.6,
-                    'line-color': '#e76f51',
+                    'line-color': e.nsInherits,
                     'line-style': 'solid',
-                    'target-arrow-color': '#e76f51',
+                    'target-arrow-color': e.nsInherits,
                     'target-arrow-shape': 'triangle', 'arrow-scale': 1.2,
                 }
             },
@@ -327,8 +580,8 @@
                 selector: 'edge[kind="typeCalls"]',
                 style: {
                     'curve-style': 'bezier', width: 1.8,
-                    'line-color': '#4c8dff',
-                    'target-arrow-color': '#4c8dff',
+                    'line-color': e.typeCalls,
+                    'target-arrow-color': e.typeCalls,
                     'target-arrow-shape': 'vee', 'arrow-scale': 1.0,
                 }
             },
@@ -336,8 +589,8 @@
                 selector: 'edge[kind="nsCalls"]',
                 style: {
                     'curve-style': 'bezier', width: 2.2,
-                    'line-color': '#4c8dff',
-                    'target-arrow-color': '#4c8dff',
+                    'line-color': e.nsCalls,
+                    'target-arrow-color': e.nsCalls,
                     'target-arrow-shape': 'vee', 'arrow-scale': 1.1,
                 }
             },
@@ -345,7 +598,7 @@
                 selector: 'edge[kind="typeContains"]',
                 style: {
                     'curve-style': 'bezier', width: 1.2,
-                    'line-color': '#c2c9d2',
+                    'line-color': e.typeContains,
                     'line-style': 'dashed',
                     'target-arrow-shape': 'none',
                 }
@@ -354,12 +607,18 @@
                 selector: 'edge[kind="calls"]',
                 style: {
                     'curve-style': 'bezier', width: 1.0,
-                    'line-color': '#8c9298',
-                    'target-arrow-color': '#8c9298',
+                    'line-color': e.calls,
+                    'target-arrow-color': e.calls,
                     'target-arrow-shape': 'vee', 'arrow-scale': 0.7,
                 }
             },
-        ]
+        ];
+    }
+
+    const cy = cytoscape({
+        container: document.getElementById('cy'),
+        wheelSensitivity: 0.3,
+        style: buildStyle(),
     });
 
     if (typeof cy.nodeHtmlLabel !== 'function') {
@@ -395,10 +654,12 @@
         edgeList: [],
         renderEdges: new Map(),     // 投影之后的边（真正画到画布上的那一份）
         offsets: new Map(),         // 节点 id -> 用户拖出来的位移（相对布局位置）
-        drag: { el: null, last: null, riders: [] },
+        drag: { el: null, last: null, riders: [], moved: false },
         lastLayout: null,           // 最近一次布局结果，拖动时拿它算位移基准
+        lastPureLayout: null,       // 同一份布局的「不含位移」坐标，拖动记位移用
         stats: null,
         drawn: null,
+        shell: null,                // 宿主外壳（标题栏那一条）的主题回执，见 shell-theme
     };
 
     function isTypeNode(n) { return n.kind !== 'namespace' && n.kind !== 'method'; }
@@ -821,16 +1082,40 @@
     }
 
     /** 把盒子树的绝对坐标写进结果表。 */
-    function placeBox(box, cx, cy, out) {
+    function placeBox(box, cx, cy, out, pure, bounds) {
         // 用户拖动过的节点，位移在这里生效。挂在父节点上的位移会被子节点自动继承 ——
         // 子节点的坐标本来就是从父节点中心推出来的，不需要逐个记。
         const off = state.offsets.get(box.n.id);
-        const x = cx + (off ? off.dx : 0);
-        const y = cy + (off ? off.dy : 0);
+        let x = cx + (off ? off.dx : 0);
+        let y = cy + (off ? off.dy : 0);
+
+        // 纯布局坐标（不含位移）单独记一份：拖动记位移时要拿它当基准，
+        // 用「已经叠加过位移的坐标」当基准的话，第二次拖动会把上一次的位移吞掉。
+        pure.set(box.n.id, { x: cx, y: cy });
+
+        // 子节点不许被拖出父容器：越界就贴边站住
+        if (bounds) {
+            x = clampAxis(x, bounds.left + box.w / 2, bounds.right - box.w / 2);
+            y = clampAxis(y, bounds.top + box.h / 2, bounds.bottom - box.h / 2);
+        }
 
         out.set(box.n.id, { x: x, y: y, w: box.w, h: box.h, tray: !!box.kids });
         if (!box.kids) return;
-        for (const k of box.kids) placeBox(k.box, x + k.dx, y + k.dy, out);
+
+        // 容器给子节点划出的可落范围：左右留内边距，上边让开标题条
+        const inner = {
+            left: x - box.w / 2 + BOX.pad,
+            right: x + box.w / 2 - BOX.pad,
+            top: y - box.h / 2 + headerHeight(box.n.kind) + BOX.pad * 0.5,
+            bottom: y + box.h / 2 - BOX.pad,
+        };
+        for (const k of box.kids) placeBox(k.box, x + k.dx, y + k.dy, out, pure, inner);
+    }
+
+    /** 夹在 [lo, hi] 之间；范围本身反了就取中点（容器比子节点还小的情况）。 */
+    function clampAxis(v, lo, hi) {
+        if (hi < lo) return (lo + hi) / 2;
+        return Math.min(Math.max(v, lo), hi);
     }
 
     /**
@@ -841,8 +1126,10 @@
      */
     function computeLayout() {
         const out = new Map();
+        const pure = new Map();
         const roots = state.nodes.filter(n => isVisible(n) && !layoutParentOf(n));
         state.lastLayout = out;
+        state.lastPureLayout = pure;
         if (roots.length === 0) return out;
 
         const built = roots.map(buildBox);
@@ -850,7 +1137,7 @@
         const originX = -inner.w / 2;
         const originY = -inner.h / 2;
         for (const p of inner.placed) {
-            placeBox(p.it, originX + p.x + p.it.w / 2, originY + p.y + p.it.h / 2, out);
+            placeBox(p.it, originX + p.x + p.it.w / 2, originY + p.y + p.it.h / 2, out, pure, null);
         }
         return out;
     }
@@ -866,6 +1153,7 @@
     // ================================================================
 
     function nodeData(n, position, box) {
+        const sel = state.selected === n.id ? 1 : 0;
         if (n.kind === 'namespace') {
             return {
                 data: {
@@ -875,6 +1163,7 @@
                     preview: n.preview || [],
                     expanded: isContainerExpanded(n.id) ? 1 : 0,
                     tray: box.tray ? 1 : 0,
+                    hovered: 0, sel: sel,
                     w: box.w, h: box.h,
                 },
                 position: position,
@@ -882,12 +1171,14 @@
         }
         if (n.kind === 'method') {
             const parent = state.nodeById.get(n.parentId);
+            const color = parent ? (TYPE_COLORS[parent.kind] || TYPE_COLORS.type) : TYPE_COLORS.type;
             return {
                 data: {
                     id: n.id, label: n.label, kind: 'method', fqn: n.fqn,
-                    color: parent ? (TYPE_COLORS[parent.kind] || '#888') : '#888',
+                    color: color, ...chipColors(color),
                     isMethod: 1, parentId: n.parentId,
                     file: n.file, line: n.line,
+                    hovered: 0, sel: sel,
                     w: box.w, h: box.h,
                 },
                 position: position,
@@ -896,10 +1187,12 @@
         return {
             data: {
                 id: n.id, label: n.label, kind: n.kind, fqn: n.fqn,
-                color: TYPE_COLORS[n.kind] || '#888', isType: 1,
+                color: TYPE_COLORS[n.kind] || TYPE_COLORS.type, isType: 1,
+                childCount: (state.childrenOf.get(n.id) || []).length,
                 fields: n.fields || [], methods: n.methods || [],
                 file: n.file, line: n.line,
                 tray: box.tray ? 1 : 0,
+                hovered: 0, sel: sel,
                 w: box.w, h: box.h,
             },
             position: position,
@@ -918,6 +1211,13 @@
         el.data('file', d.file);
         el.data('line', d.line);
         el.data('tray', d.tray);
+        // 颜色也要跟着主题走：换了主题之后 canvas 上的芯片得重新上色
+        el.data('color', d.color);
+        if (d.chipBg) {
+            el.data('ink', d.ink);
+            el.data('chipBg', d.chipBg);
+            el.data('chipHover', d.chipHover);
+        }
         el.data('w', d.w);
         el.data('h', d.h);
     }
@@ -1006,7 +1306,11 @@
 
             if (!animate) {
                 if (moved && !beingDragged) el.position(copyPos(box));
-                if (reviving) { el.stop(true); el.data('dying', 0); el.style({ opacity: 1 }); }
+                // 非动画渲染要把不透明度拉回 1：上一次的淡入可能正卡在半路
+                //（刚展开就又切了主题/又点了一次展开），不纠正的话这个节点会一直半透明
+                el.stop(true);
+                if (reviving) el.data('dying', 0);
+                el.style({ opacity: 1 });
                 continue;
             }
             if (!moved && !reviving && !grew) continue;
@@ -1076,11 +1380,16 @@
         for (const [id, e] of wantEdges) {
             const el = cy.getElementById(id);
             if (!el.empty()) {
+                const target = EDGE_OPACITY[e.kind] || 0.6;
                 if (el.data('dying')) {
                     el.stop(true);
                     el.data('dying', 0);
-                    el.animate({ style: { opacity: EDGE_OPACITY[e.kind] || 0.6 } },
+                    el.animate({ style: { opacity: target } },
                         { duration: 150, easing: 'ease-out' });
+                } else if (!animate) {
+                    // 同理：淡入到一半被非动画渲染打断的边，会永远停在半透明（甚至全透明）上
+                    el.stop(true);
+                    el.style({ opacity: target });
                 }
                 continue;
             }
@@ -1115,31 +1424,57 @@
             if (!el.empty()) el.data('expanded', isContainerExpanded(n.id) ? 1 : 0);
         }
 
+        // 悬停高亮是即时状态，重建之后要按当前悬停重新盖一遍；
+        // 悬停的节点没了（重新分析 / 折叠）就收干净，别把线留在压暗状态。
+        if (hoverId) {
+            const hoverEl = cy.getElementById(hoverId);
+            if (hoverEl.empty()) { hoverId = null; clearSpotlight(); }
+            else spotlight(hoverEl);
+        }
+
         state.drawn = { nodes: want.size, edges: wantEdges.size };
         updateStats();
     }
 
     function updateStats() {
+        const modeText = state.mode === 'namespace' ? '聚合：命名空间' : '平铺：类型';
+        if (modeLabel && modeLabel.textContent !== modeText) modeLabel.textContent = modeText;
+        if (modeBtn) {
+            modeBtn.title = state.mode === 'namespace'
+                ? '当前按命名空间聚合 · 点击切成平铺的类型'
+                : '当前平铺类型 · 点击切成命名空间聚合';
+        }
+
         if (!state.stats) return;
         // 用「目标集合」的规模而不是 cy 的实时规模：淡出中的元素还在画布上，
         // 显示实时值会让状态栏在折叠动画期间跳一下。
         const drawn = state.drawn || { nodes: cy.nodes().length, edges: cy.edges().length };
-        statsEl.textContent =
-            `${state.stats.projectId} · v${state.stats.version} · ${state.stats.fileCount} 文件 · ` +
-            `${drawn.nodes}/${state.stats.nodes} 节点 · ${drawn.edges} 边 · ` +
-            `${state.stats.elapsedMs} ms` +
-            (state.stats.fromCache ? ` · L1 缓存 ${state.stats.cachedFiles}` : '') +
-            (state.stats.analyzer ? ` · ${state.stats.analyzer}` : '');
-        const modeText = state.mode === 'namespace' ? '聚合：命名空间' : '平铺：类型';
-        if (modeBtn.textContent !== modeText) modeBtn.textContent = modeText;
+        const s = state.stats;
+        const pills = [
+            [escapeHtml(s.projectId), ''],
+            [`v${s.version}`, ''],
+            [`${s.fileCount} 文件`, ''],
+            [`${drawn.nodes}/${s.nodes} 节点`, ' hot'],
+            [`${drawn.edges} 边`, ''],
+            [`${s.elapsedMs} ms`, ''],
+        ];
+        if (s.fromCache) pills.push([`L1 缓存 ${s.cachedFiles}`, '']);
+        if (s.analyzer) pills.push([escapeHtml(s.analyzer), '']);
+        statsEl.innerHTML = pills
+            .map(([text, cls]) => `<span class="pill${cls}">${text}</span>`)
+            .join('<span class="sep">·</span>');
+        statsEl.title =
+            `${s.projectId} · v${s.version} · ${s.fileCount} 文件 · ` +
+            `${drawn.nodes}/${s.nodes} 节点 · ${drawn.edges} 边 · ${s.elapsedMs} ms` +
+            (s.fromCache ? ` · L1 缓存 ${s.cachedFiles} 文件` : '') +
+            (s.analyzer ? ` · 分析：${s.analyzer}` : '');
     }
 
     function refreshHint() {
         const tips = state.mode === 'namespace'
-            ? '单击命名空间：卡片长大，类型排到里面'
-            : '单击类型：卡片长大，方法排到里面';
-        setHint(`${tips} · 拖动卡片带着子节点走 · 双击空白折叠全部 · 单击方法跳到源码 · ` +
-            `0 复位（含拖动）· +/- 缩放 · F12 开发者工具`);
+            ? '单击命名空间就地展开，类型会排进卡片里'
+            : '单击类型就地展开，方法芯片排在卡片内部';
+        setHint(`${tips} · 按 ? 查看全部快捷键`);
     }
 
     // ================================================================
@@ -1183,6 +1518,34 @@
         // 批量展开是一次大重排，这时候重新取景才不会让用户面对一屏空白
         render({ animate: false });
         fitView();
+    }
+
+    /**
+     * 双击容器：把它整棵子树里的容器一次性展开。
+     * 带上限 —— 大项目上「展开所有后代」能把画布瞬间铺满，那种时候宁可展开一层，
+     * 剩下的交给用户继续双击。
+     */
+    function expandSubtree(id) {
+        const LIMIT = 60;
+        const isContainer = n => (state.mode === 'namespace'
+            ? n.kind === 'namespace' : isTypeNode(n));
+        const queue = [id];
+        let added = 0;
+        if (!state.expanded.has(id)) state.expanded.add(id);
+        while (queue.length > 0 && added < LIMIT) {
+            const cur = queue.shift();
+            for (const cid of (state.childrenOf.get(cur) || [])) {
+                const c = state.nodeById.get(cid);
+                if (!c || !isContainer(c)) continue;
+                if (!state.expanded.has(cid)) { state.expanded.add(cid); added++; }
+                queue.push(cid);
+            }
+        }
+        if (added === 0) return;
+        render({ animate: true });
+        setHint(added >= LIMIT
+            ? `一次最多展开 ${LIMIT} 个容器，继续双击可以接着往下开`
+            : `展开了 ${added} 个容器`);
     }
 
     // ================================================================
@@ -1258,11 +1621,10 @@
     function centerOn(id) {
         const el = cy.getElementById(id);
         if (el.empty()) return;
+        setSelected(id);
         cy.animate(
             { center: { eles: el }, zoom: Math.max(cy.zoom(), 0.7) },
             { duration: 420, easing: 'ease-out' });
-        el.select();
-        setTimeout(() => el.unselect(), 800);
     }
 
     // ================================================================
@@ -1313,34 +1675,75 @@
         setHint(`搜索「${rawQuery}」命中 ${hits.length} 个 · Enter 跳到第一个 · Esc 退出`);
     }
 
+    /** 把命中的那一段套上 <mark>，让人一眼看见「为什么它会出现在这里」。 */
+    function highlightMatch(text, needle) {
+        const s = String(text == null ? '' : text);
+        if (!needle) return escapeHtml(s);
+        const at = s.toLowerCase().indexOf(needle);
+        if (at < 0) return escapeHtml(s);
+        return escapeHtml(s.slice(0, at)) +
+            '<mark>' + escapeHtml(s.slice(at, at + needle.length)) + '</mark>' +
+            escapeHtml(s.slice(at + needle.length));
+    }
+
+    let resultRows = [];    // 当前列出的候选（顺序与 DOM 一致）
+    let resultActive = -1;  // 键盘选中的那一行
+
     function renderResults(list, total, query) {
         if (!resultsEl) return;
         resultsEl.innerHTML = '';
-        if (list.length === 0) { hideResults(); return; }
+        resultRows = list.slice(0, 40);
+        resultActive = resultRows.length ? 0 : -1;
+        if (resultRows.length === 0) { hideResults(); return; }
 
-        list.slice(0, 40).forEach(n => {
+        const needle = query.trim().toLowerCase();
+        resultRows.forEach((n, i) => {
             const row = document.createElement('div');
-            row.className = 'row';
-            const color = TYPE_COLORS[n.kind] || '#888';
+            row.className = 'row' + (i === resultActive ? ' active' : '');
+            const color = TYPE_COLORS[n.kind] || TYPE_COLORS.type;
             row.innerHTML =
                 `<span class="kind" style="background:${color}">${KIND_LABEL[n.kind] || n.kind}</span>` +
-                `<span>${escapeHtml(n.label)}</span>` +
-                `<span class="fqn">${escapeHtml(n.fqn || '')}</span>`;
+                `<span class="label">${highlightMatch(n.label, needle)}</span>` +
+                `<span class="fqn" title="${escapeHtml(n.fqn || '')}">${escapeHtml(n.fqn || '')}</span>`;
             row.addEventListener('mousedown', ev => {
                 ev.preventDefault();
-                centerOn(n.id);
-                hideResults();
+                pickResult(i);
             });
+            row.addEventListener('mousemove', () => setActiveResult(i));
             resultsEl.appendChild(row);
         });
 
-        if (total > 40) {
+        if (total > resultRows.length) {
             const more = document.createElement('div');
             more.className = 'more';
-            more.textContent = `… 还有 ${total - 40} 个匹配（请把关键词写得更具体）`;
+            more.textContent = `… 还有 ${total - resultRows.length} 个匹配，把关键词写具体一点`;
             resultsEl.appendChild(more);
         }
+
+        const foot = document.createElement('div');
+        foot.className = 'foot';
+        foot.innerHTML = `<span>${total} 个匹配</span>` +
+            '<span style="margin-left:auto">↑↓ 选择 · Enter 定位 · Esc 退出</span>';
+        resultsEl.appendChild(foot);
+
         resultsEl.classList.add('open');
+    }
+
+    function setActiveResult(i) {
+        const rows = resultsEl ? resultsEl.querySelectorAll('.row') : [];
+        if (!rows.length) return;
+        resultActive = (i + rows.length) % rows.length;
+        rows.forEach((r, k) => r.classList.toggle('active', k === resultActive));
+        if (rows[resultActive].scrollIntoView) {
+            rows[resultActive].scrollIntoView({ block: 'nearest' });
+        }
+    }
+
+    function pickResult(i) {
+        const n = resultRows[i];
+        if (!n) return;
+        centerOn(n.id);
+        hideResults();
     }
 
     function hideResults() {
@@ -1518,20 +1921,15 @@
         ctx.scale(scale, scale);
         ctx.translate(pad - x1, pad - y1);
 
-        ctx.fillStyle = '#fafafa';
+        ctx.fillStyle = theme().pngBg;
         ctx.fillRect(x1 - pad, y1 - pad, w, h);
 
         // —— 先画边 ——
-        const EDGE_COLOR = {
-            inherits: '#e76f51', nsInherits: '#e76f51',
-            typeCalls: '#4c8dff', nsCalls: '#4c8dff',
-            typeContains: '#c2c9d2', calls: '#8c9298',
-        };
         for (const e of edges) {
             const a = pos.get(e.source);
             const b = pos.get(e.target);
             if (!a || !b) continue;
-            const color = EDGE_COLOR[e.kind] || '#8c9298';
+            const color = EDGE_COLOR[e.kind] || EDGE_COLOR.calls;
             const lineWidth = (e.kind === 'inherits' || e.kind === 'nsInherits') ? 2.2
                 : (e.kind === 'typeCalls' || e.kind === 'nsCalls') ? 1.8 : 1.2;
 
@@ -1569,24 +1967,25 @@
         return canvas.toDataURL('image/png');
     }
 
-    /** 方法芯片：圆角小方块 + 名字写在里面（和画布上的样式一致）。 */
+    /** 方法芯片：圆角胶囊 + 主色描边 + 淡色底（和画布上的样式一致）。 */
     function drawChip(ctx, n, box) {
         const parent = state.nodeById.get(n.parentId);
-        const color = TYPE_COLORS[(parent || {}).kind] || '#888';
+        const color = TYPE_COLORS[(parent || {}).kind] || TYPE_COLORS.type;
+        const c = chipColors(color);
         ctx.save();
         ctx.beginPath();
-        roundRect(ctx, box.x1, box.y1, box.w, box.h, 4);
-        ctx.fillStyle = '#ffffff';
+        roundRect(ctx, box.x1, box.y1, box.w, box.h, box.h / 2);
+        ctx.fillStyle = c.chipBg;
         ctx.fill();
-        ctx.lineWidth = 1.2;
+        ctx.lineWidth = 1;
         ctx.strokeStyle = color;
         ctx.stroke();
 
-        ctx.fillStyle = '#33475b';
+        ctx.fillStyle = c.ink;
         ctx.font = `${BOX.chipFontSize}px "Segoe UI", "Microsoft YaHei", sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(clipText(ctx, n.label, box.w - 8), box.x1 + box.w / 2, box.y1 + box.h / 2);
+        ctx.fillText(clipText(ctx, n.label, box.w - 14), box.x1 + box.w / 2, box.y1 + box.h / 2);
         ctx.restore();
     }
 
@@ -1612,56 +2011,89 @@
     }
 
     function drawCard(ctx, n, box) {
-        const color = TYPE_COLORS[n.kind] || '#888';
-        const radius = 5;
+        const t = theme();
+        const color = TYPE_COLORS[n.kind] || TYPE_COLORS.type;
+        const isNs = n.kind === 'namespace';
+        const soft = mix(color, t.surface, t.dark ? 0.80 : 0.88);
+        const border = mix(color, t.surface, t.dark ? 0.55 : 0.68);
+        const deep = mix(color, '#000000', t.dark ? 0.30 : 0.20);
+        const accentInk = mix(color, t.dark ? '#ffffff' : '#0b1020', 0.30);
+        const radius = 11;
         const x = box.x1, y = box.y1, w = box.w, h = box.h;
+        const headerH = headerHeight(n.kind);
 
+        // —— 卡片底 ——
         ctx.save();
         ctx.beginPath();
         roundRect(ctx, x, y, w, h, radius);
-        ctx.fillStyle = n.tray ? '#fbfcfe' : '#ffffff';
+        ctx.fillStyle = isNs ? deep : (n.tray ? mix(color, t.surface, 0.97) : t.surface);
         ctx.fill();
-        ctx.lineWidth = n.kind === 'namespace' ? 2 : 1.5;
-        ctx.strokeStyle = color;
+        ctx.lineWidth = 1;
+        ctx.strokeStyle = border;
+        if (n.tray) ctx.setLineDash([5, 4]);
         ctx.stroke();
+        ctx.setLineDash([]);
 
-        // 标题条
-        const headerH = headerHeight(n.kind);
+        // —— 标题条 ——
         ctx.save();
         ctx.beginPath();
         roundRect(ctx, x, y, w, h, radius);
         ctx.clip();
-        ctx.fillStyle = color;
+        if (isNs) {
+            const g = ctx.createLinearGradient(x, y, x + w, y + headerH);
+            g.addColorStop(0, color);
+            g.addColorStop(1, deep);
+            ctx.fillStyle = g;
+        } else {
+            ctx.fillStyle = soft;
+        }
         ctx.fillRect(x, y, w, headerH);
+        ctx.beginPath();
+        ctx.moveTo(x, y + headerH - 0.5);
+        ctx.lineTo(x + w, y + headerH - 0.5);
+        ctx.strokeStyle = isNs ? 'rgba(255,255,255,.28)' : border;
+        ctx.lineWidth = 1;
+        ctx.stroke();
         ctx.restore();
 
+        // 类型徽标
+        const gx = x + 9, gy = y + (headerH - 16) / 2;
+        ctx.beginPath();
+        roundRect(ctx, gx, gy, 16, 16, 5);
+        ctx.fillStyle = isNs ? 'rgba(255,255,255,.22)' : color;
+        ctx.fill();
         ctx.fillStyle = '#ffffff';
-        ctx.font = `bold ${n.kind === 'namespace' ? 13 : 12}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+        ctx.font = 'bold 9px "Segoe UI", "Microsoft YaHei", sans-serif';
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
-        ctx.fillText(clipText(ctx, n.label, w - 16), x + w / 2, y + headerH / 2);
+        ctx.fillText(KIND_GLYPH[n.kind] || 'T', gx + 8, gy + 8.5);
+
+        // 标题
+        ctx.fillStyle = isNs ? '#ffffff' : accentInk;
+        ctx.font = `650 ${isNs ? 12.5 : 12}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+        ctx.textAlign = 'left';
+        ctx.fillText(clipText(ctx, n.label, w - 44), x + 32, y + headerH / 2 + 0.5);
 
         // 托盘内部留给子节点，正文不画（子节点会各自画在自己的位置上）
         if (n.tray) { ctx.restore(); return; }
 
-        // 正文
-        ctx.textAlign = 'left';
+        // —— 正文 ——
         ctx.font = '11px "Cascadia Mono", "Consolas", monospace';
-        ctx.fillStyle = '#333333';
-        let cursor = y + headerH + 8;
-        const lines = n.kind === 'namespace'
+        let cursor = y + headerH + 9;
+        const lines = isNs
             ? [`${(state.childrenOf.get(n.id) || []).length} 个类型`, ...(n.preview || [])]
             : [...(n.fields || []), ...(n.methods || [])];
-        for (const line of lines) {
+        for (let i = 0; i < lines.length; i++) {
             if (cursor > y + h - 4) break;
-            if (line.startsWith('…')) ctx.fillStyle = '#9aa4b2';
-            ctx.fillText(clipText(ctx, line, w - 16), x + 8, cursor + 5);
-            ctx.fillStyle = '#333333';
-            cursor += 17;
+            const line = lines[i];
+            ctx.fillStyle = line.startsWith('…') ? t.muted
+                : (isNs ? t.ink2 : (i < (n.fields || []).length ? t.ink2 : t.ink));
+            ctx.fillText(clipText(ctx, line, w - 20), x + 10, cursor + 5);
+            cursor += 18;
         }
         if (lines.length === 0) {
-            ctx.fillStyle = '#bbbbbb';
-            ctx.fillText('(空)', x + 8, cursor + 5);
+            ctx.fillStyle = t.muted;
+            ctx.fillText('（无成员）', x + 10, cursor + 5);
         }
         ctx.restore();
     }
@@ -1853,6 +2285,8 @@
             refreshHint();
             for (const n of stale) requestResolve(n);
         });
+        // 没有任何节点 = 还没打开项目，给一张能直接开始的空状态
+        toggleWelcome(state.nodes.length === 0);
     }
 
     function methodSignature(n) {
@@ -1863,30 +2297,137 @@
     //  交互
     // ================================================================
 
-    // 悬停：cytoscape 没有 :hover 伪类，只能自己加类
-    cy.on('mouseover', 'node[isType], node[isNs], node[isMethod]',
-        evt => evt.target.addClass('hovered'));
-    cy.on('mouseout', 'node[isType], node[isNs], node[isMethod]',
-        evt => evt.target.removeClass('hovered'));
+    /*
+     * 选中与悬停都写进节点的 data，而不是往 DOM 上挂类：
+     * 卡片那一层 DOM 是 cytoscape-node-html-label 按 data 重建的，
+     * 从外面加的类活不过下一次渲染；放进 data 才能让卡片模板和方法芯片都读到。
+     */
+    function setNodeFlag(id, key, value) {
+        const el = id ? cy.getElementById(id) : null;
+        if (!el || el.empty()) return;
+        if (el.data(key) === value) return;
+        el.data(key, value);
+    }
 
-    cy.on('tap', 'node[isNs]', evt => { state.selected = evt.target.id(); toggle(evt.target.id()); });
-    cy.on('tap', 'node[isType]', evt => { state.selected = evt.target.id(); toggle(evt.target.id()); });
+    function setSelected(id) {
+        id = id || null;
+        if (state.selected === id) { updateCrumbs(); return; }
+        setNodeFlag(state.selected, 'sel', 0);
+        state.selected = id;
+        setNodeFlag(id, 'sel', 1);
+        updateCrumbs();
+    }
+
+    /** 顶部那条面包屑：当前选中节点在包含树里的位置，点中间一段可以跳回去。 */
+    function updateCrumbs() {
+        if (!crumbsEl) return;
+        const n = state.selected ? state.nodeById.get(state.selected) : null;
+        if (!n) {
+            crumbsEl.classList.remove('open');
+            crumbsEl.innerHTML = '';
+            return;
+        }
+
+        const chain = [n];
+        for (const pid of ancestorsOf(n.id)) {
+            const p = state.nodeById.get(pid);
+            if (p) chain.unshift(p);
+        }
+
+        crumbsEl.innerHTML = chain.map((c, i) => {
+            const color = TYPE_COLORS[c.kind] || TYPE_COLORS.type;
+            const last = i === chain.length - 1;
+            return (i ? '<span class="sep">›</span>' : '') +
+                `<span class="crumb${last ? ' last' : ''}" data-crumb="${escapeHtml(c.id)}" ` +
+                `title="${escapeHtml(c.fqn || c.label)}">` +
+                (last ? `<span class="dot" style="background:${color}"></span>` : '') +
+                escapeHtml(c.label) + '</span>';
+        }).join('');
+        crumbsEl.classList.add('open');
+    }
+
+    if (crumbsEl) {
+        crumbsEl.addEventListener('click', ev => {
+            const hit = ev.target.closest ? ev.target.closest('[data-crumb]') : null;
+            if (!hit) return;
+            const id = hit.getAttribute('data-crumb');
+            // 点到链路中间的一段：把它上面的容器都展开，再飞过去
+            for (const pid of ancestorsOf(id)) state.expanded.add(pid);
+            render({ animate: true });
+            centerOn(id);
+        });
+    }
+
+    // —— 悬停：把跟它有关系的边点亮，其余的压暗 ——
+    const EDGE_WIDTH = {
+        inherits: 2.2, nsInherits: 2.6, typeCalls: 1.8,
+        nsCalls: 2.2, typeContains: 1.2, calls: 1.0,
+    };
+
+    let hoverId = null;
+    let spot = null;
+
+    function setHovered(id) {
+        id = id || null;
+        if (hoverId === id) return;
+        setNodeFlag(hoverId, 'hovered', 0);
+        hoverId = id;
+        setNodeFlag(id, 'hovered', 1);
+    }
+
+    function clearSpotlight() {
+        if (!spot) return;
+        spot.dimmed.forEach(el => el.style('opacity', EDGE_OPACITY[el.data('kind')] || 0.6));
+        spot.lit.removeStyle('width');
+        spot = null;
+    }
+
+    /** 孤立节点没有邻边，压暗整张图只会让人以为界面坏了 —— 那就什么都不做。 */
+    function spotlight(node) {
+        clearSpotlight();
+        // 正在淡出的边不参与：它们的透明度是「动画的中间值」，
+        // 碰了它们等于把一条本该消失的线重新点亮。
+        const live = cy.edges().filter(e => !e.data('dying'));
+        const lit = node.closedNeighborhood().edges().filter(e => !e.data('dying'));
+        if (lit.length === 0) return;
+        const dimmed = live.difference(lit);
+        if (dimmed.length === 0) return;
+        dimmed.style('opacity', 0.07);
+        lit.forEach(el => el.style('width', (EDGE_WIDTH[el.data('kind')] || 1.6) * 1.7));
+        spot = { dimmed: dimmed, lit: lit };
+    }
+
+    cy.on('mouseover', 'node', evt => {
+        setHovered(evt.target.id());
+        spotlight(evt.target);
+    });
+    cy.on('mouseout', 'node', evt => {
+        if (hoverId === evt.target.id()) setHovered(null);
+        clearSpotlight();
+    });
+
+    cy.on('tap', 'node[isNs], node[isType]', evt => {
+        setSelected(evt.target.id());
+        toggle(evt.target.id());
+    });
     cy.on('tap', 'node[isMethod]', evt => {
-        state.selected = evt.target.id();
+        setSelected(evt.target.id());
         const d = evt.target.data();
         if (!d.file) return;
         setHint(`跳转 ${d.file}:${d.line} ...`);
         post({ type: 'goto', file: d.file, line: d.line || 1 });
     });
     cy.on('tap', evt => {
-        if (evt.target === cy) { hideResults(); }
+        if (evt.target === cy) { hideResults(); setSelected(null); }
     });
     cy.on('dbltap', evt => {
-        if (evt.target === cy) { clearFilter(); collapseAll(); }
+        if (evt.target === cy) { clearFilter(); collapseAll(); setSelected(null); }
     });
+    // 双击容器 = 把它下面的容器一起展开，省掉一层层点
+    cy.on('dbltap', 'node[isNs], node[isType]', evt => expandSubtree(evt.target.id()));
     // 右键直接按工具栏当前的方向与深度追踪
     cy.on('cxttap', 'node', evt => {
-        state.selected = evt.target.id();
+        setSelected(evt.target.id());
         traceFrom(evt.target.id(),
             traceDirEl ? traceDirEl.value : 'out',
             Number(traceDepthEl ? traceDepthEl.value : 3));
@@ -1920,14 +2461,48 @@
         return out;
     }
 
-    /** 这个节点一共被拖离布局位置多远（相对它自己的布局坐标）。 */
+    /**
+     * 这个节点一共被拖离「纯布局位置」多远。
+     * 基准用的是 lastPureLayout（不含位移的那份坐标）：如果拿叠加过位移的坐标当基准，
+     * 第二次拖动只会记下第二次的增量，上一次拖出来的位置会被悄悄吞掉。
+     */
     function rememberDragOffset(el) {
-        const base = state.lastLayout && state.lastLayout.get(el.id());
+        const base = state.lastPureLayout && state.lastPureLayout.get(el.id());
         if (!base) return;
         const cur = el.position();
         const dx = cur.x - base.x, dy = cur.y - base.y;
         if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) state.offsets.delete(el.id());
         else state.offsets.set(el.id(), { dx: dx, dy: dy });
+    }
+
+    /** 这个节点拖动时允许落在的范围（相对当前可见的父容器）；根节点不受限。 */
+    function dragBounds(el) {
+        const n = state.nodeById.get(el.id());
+        if (!n) return null;
+        const parent = layoutParentOf(n);
+        if (!parent) return null;
+        const pel = cy.getElementById(parent.id);
+        if (pel.empty()) return null;
+        const pw = pel.data('w'), ph = pel.data('h');
+        if (!pw || !ph) return null;
+        const c = pel.position();
+        return {
+            left: c.x - pw / 2 + BOX.pad,
+            right: c.x + pw / 2 - BOX.pad,
+            top: c.y - ph / 2 + headerHeight(parent.kind) + BOX.pad * 0.5,
+            bottom: c.y + ph / 2 - BOX.pad,
+        };
+    }
+
+    /** 把位置夹回父容器内部。子节点被拖到边界时就贴着边界走，不会整个甩出去。 */
+    function clampToParent(el, pos) {
+        const b = dragBounds(el);
+        if (!b) return pos;
+        const hw = el.width() / 2, hh = el.height() / 2;
+        return {
+            x: clampAxis(pos.x, b.left + hw, b.right - hw),
+            y: clampAxis(pos.y, b.top + hh, b.bottom - hh),
+        };
     }
 
     /** 清掉手动拖出来的位移，回到自动布局的位置。 */
@@ -1942,16 +2517,21 @@
         state.drag.el = evt.target;
         state.drag.last = copyPos(evt.target.position());
         state.drag.riders = visibleDescendants(evt.target);
+        state.drag.moved = false;
     });
 
     cy.on('drag', 'node', evt => {
         const el = evt.target;
         if (state.drag.el !== el) return;
-        const cur = copyPos(el.position());
+        const raw = copyPos(el.position());
+        const cur = clampToParent(el, raw);
+        if (cur.x !== raw.x || cur.y !== raw.y) el.position(cur);
+
         const dx = cur.x - state.drag.last.x;
         const dy = cur.y - state.drag.last.y;
         if (dx === 0 && dy === 0) return;
         state.drag.last = cur;
+        state.drag.moved = true;
 
         for (const r of state.drag.riders) {
             if (r.removed() || r.id() === el.id()) continue;
@@ -1963,10 +2543,96 @@
 
     cy.on('free', 'node', evt => {
         if (state.drag.el !== evt.target) return;
-        rememberDragOffset(evt.target);
+        // 只是点一下（没有真的拖动）就别记位移：布局动画还在跑的时候，
+        // 节点当下只是动画的中间帧，拿它当基准会把卡片钉在一个谁也没拖过的位置上。
+        if (state.drag.moved) rememberDragOffset(evt.target);
         state.drag.el = null;
         state.drag.riders = [];
+        state.drag.moved = false;
     });
+
+    // ================================================================
+    //  界面部件：主题 / 图例 / 帮助 / 缩放 / 空状态
+    // ================================================================
+
+    /**
+     * 切主题。
+     * CSS 变量一改，工具条与卡片样式立刻跟着变；canvas 上的东西（芯片、连线）
+     * 读的是 cytoscape 样式表和节点 data，所以要重建样式表、重画一遍。
+     */
+    function setTheme(name, opts) {
+        opts = opts || {};
+        applyThemeVars(name);
+        if (!opts.silent) {
+            try { localStorage.setItem(THEME_KEY, themeName); } catch (_) { /* 存不下就只影响下次启动 */ }
+        }
+        sizeCache.clear();
+        headerCache.clear();
+        cy.style().fromJson(buildStyle());
+        render({ animate: false });
+        // 标题栏也跟着走：深色图配一条亮色系统标题栏太割裂
+        post({ type: 'theme', dark: theme().dark });
+    }
+
+    function legendLine(color, width, dashed, arrow) {
+        return `<svg class="line" width="22" height="8" viewBox="0 0 22 8">` +
+            `<path d="M1 4h${arrow ? 16 : 20}" stroke="${color}" stroke-width="${width}" ` +
+            `stroke-linecap="round"${dashed ? ' stroke-dasharray="3 2.5"' : ''}/>` +
+            (arrow
+                ? `<path d="M16 1.2L20.4 4 16 6.8z" fill="${color}"/>`
+                : '') +
+            '</svg>';
+    }
+
+    function renderLegend() {
+        if (!legendBody) return;
+        const nodes = LEGEND_KINDS
+            .map(([k, label]) => '<div class="legend-row">' +
+                `<span class="swatch" style="background:${TYPE_COLORS[k]}"></span>${label}</div>`)
+            .join('');
+        const edges = LEGEND_EDGES
+            .map(([k, label, w, dashed]) => '<div class="legend-row">' +
+                legendLine(EDGE_COLOR[k], w, dashed, k !== 'typeContains') + label + '</div>')
+            .join('');
+        legendBody.innerHTML =
+            `<div class="legend-group"><span class="legend-title">节点</span>${nodes}</div>` +
+            `<div class="legend-group"><span class="legend-title">关系</span>${edges}</div>`;
+    }
+
+    function renderHelp() {
+        if (!helpRows) return;
+        helpRows.innerHTML = HELP_ROWS.map(([keys, desc]) =>
+            '<div class="help-row"><span class="keys">' +
+            keys.map(k => `<kbd>${escapeHtml(k)}</kbd>`).join('') +
+            `</span><span>${escapeHtml(desc)}</span></div>`).join('');
+    }
+
+    function toggleHelp(force) {
+        if (!helpEl) return;
+        const open = force === undefined ? !helpEl.classList.contains('open') : !!force;
+        helpEl.classList.toggle('open', open);
+    }
+
+    function closeMenus() {
+        if (exportMenu) exportMenu.classList.remove('open');
+    }
+
+    function updateZoomLabel() {
+        if (!zoomValueEl) return;
+        const pct = Math.round(cy.zoom() * 100);
+        zoomValueEl.textContent = `${pct}%`;
+        zoomValueEl.title = `当前 ${pct}% · 点击回到 100%`;
+    }
+
+    function syncSearchClear() {
+        const has = !!(searchEl && searchEl.value.length > 0);
+        if (searchClearBtn) searchClearBtn.hidden = !has;
+        if (searchWrap) searchWrap.classList.toggle('has-value', has);
+    }
+
+    function toggleWelcome(show) {
+        if (welcomeEl) welcomeEl.classList.toggle('open', !!show);
+    }
 
     if (modeBtn) {
         modeBtn.addEventListener('click', () => {
@@ -1978,6 +2644,7 @@
             state.offsets.clear();
             state.drag.el = null;
             state.drag.riders = [];
+            setSelected(null);
             updateFocusBar();
             cy.elements().remove();
             render({ animate: false });
@@ -2001,15 +2668,53 @@
     }
     if (focusClear) focusClear.addEventListener('click', () => clearFilter());
 
-    const exportPngBtn = document.getElementById('exportPng');
-    if (exportPngBtn) exportPngBtn.addEventListener('click', () => exportAs('png'));
-    const exportMermaidBtn = document.getElementById('exportMermaid');
-    if (exportMermaidBtn) exportMermaidBtn.addEventListener('click', () => exportAs('mermaid'));
-    const exportJsonBtn = document.getElementById('exportJson');
-    if (exportJsonBtn) exportJsonBtn.addEventListener('click', () => exportAs('json'));
+    // —— 导出：三个格式收进一个菜单，工具栏不再被按钮撑满 ——
+    const exportBtn = document.getElementById('exportBtn');
+    if (exportBtn) {
+        exportBtn.addEventListener('click', ev => {
+            ev.stopPropagation();
+            if (exportMenu) exportMenu.classList.toggle('open');
+        });
+    }
+    for (const [id, format] of [['exportPng', 'png'], ['exportMermaid', 'mermaid'], ['exportJson', 'json']]) {
+        const el = document.getElementById(id);
+        if (el) el.addEventListener('click', () => { closeMenus(); exportAs(format); });
+    }
+
+    // —— 重新分析 / 主题 / 帮助 / 图例 / 缩放 ——
+    const reloadBtn = document.getElementById('reloadBtn');
+    if (reloadBtn) {
+        reloadBtn.addEventListener('click', () => {
+            setBusy(true);
+            setHint('重新分析中…');
+            post({ type: 'reload' });
+        });
+    }
+    if (themeBtn) themeBtn.addEventListener('click', () => setTheme(theme().dark ? 'light' : 'dark'));
+    if (helpBtn) helpBtn.addEventListener('click', () => toggleHelp(true));
+    const helpCloseBtn = document.getElementById('helpClose');
+    if (helpCloseBtn) helpCloseBtn.addEventListener('click', () => toggleHelp(false));
+    if (helpEl) {
+        helpEl.addEventListener('mousedown', ev => { if (ev.target === helpEl) toggleHelp(false); });
+    }
+    if (legendToggle) {
+        legendToggle.addEventListener('click', () => legendEl.classList.toggle('collapsed'));
+    }
+    if (welcomeOpenBtn) welcomeOpenBtn.addEventListener('click', () => post({ type: 'open-project' }));
+
+    const zoomBy = k => cy.animate({ zoom: cy.zoom() * k, duration: 180, easing: 'ease-out' });
+    const zoomInBtn = document.getElementById('zoomIn');
+    if (zoomInBtn) zoomInBtn.addEventListener('click', () => zoomBy(1.25));
+    const zoomOutBtn = document.getElementById('zoomOut');
+    if (zoomOutBtn) zoomOutBtn.addEventListener('click', () => zoomBy(1 / 1.25));
+    if (zoomValueEl) zoomValueEl.addEventListener('click', () => cy.animate({ zoom: 1, duration: 220 }));
+    const zoomFitBtn = document.getElementById('zoomFit');
+    if (zoomFitBtn) zoomFitBtn.addEventListener('click', () => { resetDragOffsets(); fitView(420); });
+    cy.on('zoom', updateZoomLabel);
 
     if (searchEl) {
         searchEl.addEventListener('input', () => {
+            syncSearchClear();
             if (searchTimer) clearTimeout(searchTimer);
             searchTimer = setTimeout(() => runSearch(searchEl.value), 180);
         });
@@ -2019,31 +2724,53 @@
             }
         });
         searchEl.addEventListener('keydown', ev => {
-            if (ev.key === 'Enter') {
+            if (ev.key === 'ArrowDown') {
                 ev.preventDefault();
-                const first = resultsEl && resultsEl.querySelector('.row');
-                if (first) first.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+                setActiveResult(resultActive + 1);
+            } else if (ev.key === 'ArrowUp') {
+                ev.preventDefault();
+                setActiveResult(resultActive - 1);
+            } else if (ev.key === 'Enter') {
+                ev.preventDefault();
+                pickResult(Math.max(0, resultActive));
             } else if (ev.key === 'Escape') {
                 clearFilter();
                 searchEl.blur();
             }
         });
     }
+    if (searchClearBtn) {
+        searchClearBtn.addEventListener('click', () => {
+            clearFilter();
+            if (searchEl) searchEl.focus();
+        });
+    }
 
     document.addEventListener('mousedown', ev => {
-        if (!resultsEl) return;
-        if (ev.target === searchEl || resultsEl.contains(ev.target)) return;
-        hideResults();
+        if (searchWrap && searchWrap.contains(ev.target)) { /* 点搜索区不关面板 */ }
+        else hideResults();
+        if (!exportWrap || !exportWrap.contains(ev.target)) closeMenus();
     });
 
     window.chrome.webview.addEventListener('message', ev => {
         const msg = ev.data;
         if (!msg || typeof msg !== 'object') return;
-        if (msg.type === 'snapshot') onSnapshot(msg.snapshot);
-        else if (msg.type === 'resolved') onResolved(msg);
+        if (msg.type === 'snapshot') { setBusy(false); onSnapshot(msg.snapshot); }
+        else if (msg.type === 'resolved') { setBusy(false); onResolved(msg); }
         else if (msg.type === 'navigated') onNavigated(msg);
         else if (msg.type === 'exported') onExported(msg);
-        else if (msg.type === 'resolving') setHint('语义解析中…（首次解析需要建立编译，稍等）');
+        else if (msg.type === 'shell-theme') {
+            // 宿主回执：外壳真的把主题落到了根元素上（actualTheme 是 XAML 说了算的）
+            state.shell = {
+                dark: !!msg.dark,
+                actual: msg.actual || '',
+                band: msg.band || '',
+            };
+        }
+        else if (msg.type === 'resolving') {
+            setBusy(true);
+            setHint('语义解析中…（首次解析要建立编译，稍等）');
+        }
     });
 
     window.addEventListener('keydown', e => {
@@ -2052,13 +2779,20 @@
             if (e.key === 'Escape' && tag === 'INPUT') clearFilter();
             return;
         }
+        if (e.key === '?') { e.preventDefault(); toggleHelp(); return; }
         if (e.key === '/') { e.preventDefault(); if (searchEl) searchEl.focus(); return; }
         // 「0 复位」把视图和手动拖动一起复位：拖过之后如果没有恢复的办法，
         // 用户就只能一个个拖回去
         if (e.key === '0') { resetDragOffsets(); fitView(400); }
         else if (e.key === '=' || e.key === '+') cy.animate({ zoom: cy.zoom() * 1.2, duration: 200 });
         else if (e.key === '-') cy.animate({ zoom: cy.zoom() / 1.2, duration: 200 });
-        else if (e.key === 'Escape') { clearFilter(); collapseAll(); }
+        else if (e.key === 'f' || e.key === 'F') fitView(420);
+        else if (e.key === 'Escape') {
+            if (helpEl && helpEl.classList.contains('open')) { toggleHelp(false); return; }
+            clearFilter();
+            collapseAll();
+            setSelected(null);
+        }
         else if (e.key === 't' || e.key === 'T') {
             if (state.selected) {
                 traceFrom(state.selected,
@@ -2068,8 +2802,31 @@
         } else if (e.key === 'F12') post({ type: 'devtools' });
     });
 
+    // 用户没显式选过主题时，跟随系统的深浅色切换
+    if (window.matchMedia) {
+        const scheme = window.matchMedia('(prefers-color-scheme: dark)');
+        const onScheme = evt => {
+            let saved = null;
+            try { saved = localStorage.getItem(THEME_KEY); } catch (_) { /* 忽略 */ }
+            if (saved === 'light' || saved === 'dark') return;
+            setTheme(evt.matches ? 'dark' : 'light', { silent: true });
+        };
+        if (scheme.addEventListener) scheme.addEventListener('change', onScheme);
+        else if (scheme.addListener) scheme.addListener(onScheme);
+    }
+
+    renderHelp();
+    renderLegend();
+    syncSearchClear();
+    updateZoomLabel();
+    updateCrumbs();
+    // 主题是页面说了算，但标题栏那条底和窗口按钮是宿主画的。
+    // 启动时就得报一次，否则「系统浅色 + 上次选了深色」这种组合下，
+    // 外壳会一直停在系统主题上，跟页面两种颜色。
+    post({ type: 'theme', dark: theme().dark });
     post({ type: 'ready' });
     setHint('已就绪，打开项目后显示骨架图');
+    toggleWelcome(true);
     updateStats();
 
     // 诊断句柄：方案 §8 的原则是「WebView2 里排查问题的成本远高于普通浏览器」，
@@ -2096,6 +2853,14 @@
         visibleDescendants,
         resetDragOffsets,
         headerHeight,
+        // 界面入口：自检脚本可以切主题、开帮助面板，不用去点按钮
+        setTheme,
+        toggleHelp,
+        setSelected,
+        setHovered,
+        spotlight,
+        clearSpotlight,
+        THEMES,
         snapshotSummary() {
             const byKind = {};
             for (const n of state.nodes) byKind[n.kind] = (byKind[n.kind] || 0) + 1;
@@ -2103,6 +2868,10 @@
                 projectId: state.projectId,
                 version: state.version,
                 mode: state.mode,
+                theme: themeName,
+                shell: state.shell || null,
+                hovered: hoverId,
+                busy: !!(progressEl && progressEl.classList.contains('on')),
                 errors: window.__errors || [],
                 source: { nodes: state.nodes.length, edges: state.edges.length, byKind },
                 drawn: { nodes: cy.nodes().length, edges: cy.edges().length },

@@ -56,6 +56,12 @@ public sealed class ProjectContext : IDisposable
         _ = RebuildAsync(cts.Token);
     }
 
+    /// <summary>
+    /// 手动触发一次重建（工具栏的「重新分析」）。
+    /// 跟文件监听走同一条路：没有激活时（还没 Activate）什么也不做。
+    /// </summary>
+    public void Reload() => OnSourceChanged();
+
     private async Task RebuildAsync(CancellationToken ct)
     {
         if (Interlocked.Exchange(ref _pending, 1) == 1) return;
