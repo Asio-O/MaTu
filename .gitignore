@@ -1,0 +1,45 @@
+## .NET 构建产物
+bin/
+obj/
+[Dd]ebug/
+[Rr]elease/
+x64/
+x86/
+ARM64/
+*.binlog
+
+## Visual Studio / Rider / VS Code
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+## 码图的本地缓存与 WebView2 用户数据
+## （L1 缓存按项目根路径哈希存在 %LOCALAPPDATA% 下，这里兜底防误提交）
+**/码图.exe.WebView2/
+*.WebView2/
+__matu_probe_tmp.cs
+
+## 发布产物
+publish/
+*.appx
+*.msix
+*.msixbundle
+*.appxbundle
+AppPackages/
+BundleArtifacts/
+
+## 测试与覆盖率
+[Tt]est[Rr]esult*/
+*.coverage
+*.coverlet.json
+
+## 杂项
+*.log
+*.tmp
+*.bak
+Thumbs.db
+desktop.ini

@@ -1,0 +1,10 @@
+﻿{
+  "profiles": {
+    "码图 (Package)": {
+      "commandName": "MsixPackage"
+    },
+    "码图 (Unpackaged)": {
+      "commandName": "Project"
+    }
+  }
+}
