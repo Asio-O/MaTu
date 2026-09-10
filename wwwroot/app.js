@@ -51,16 +51,46 @@
         growDuration: 420,
         shrinkDuration: 300,
         fadeDuration: 240,
+        moveDuration: 340,
         easing: 'ease-out',
     };
 
-    // 展开一个容器时，子节点环形半径与环间距（按关系类型区分）
-    const RING = {
-        'ns->type': { radius: 320, spacing: 210, capacity: 130 },
-        'type->type': { radius: 400, spacing: 230, capacity: 130 },
-        'type->method': { radius: 170, spacing: 74, capacity: 60 },
-        'default': { radius: 260, spacing: 180, capacity: 100 },
+    // 展开一个容器 = 容器卡片自己长大成「托盘」，子节点排在托盘内部（可以递归嵌套），
+    // 而不是散落到容器四周的环上。这样「谁属于谁」是看出来的，不用靠边去猜。
+    const BOX = {
+        pad: 16,          // 托盘内边距
+        gapX: 18,         // 子项水平间距
+        gapY: 16,         // 子项垂直间距
+        rootGapX: 64,     // 顶层托盘/卡片之间的间距
+        rootGapY: 56,
+        chipH: 22,        // 方法芯片高度
+        chipPadX: 24,     // 方法芯片两侧留白
+        chipFontSize: 10,
+        maxRow: 1400,     // 一行最多铺多宽
+        perColumn: 22,    // 方法芯片一列最多放几个，超了就多开一列
     };
+
+    // 方法芯片的字体要和 cytoscape 样式里写的完全一致，否则量出来的宽度是错的
+    const CHIP_FONT = `${BOX.chipFontSize}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+
+    const labelCtx = document.createElement('canvas').getContext('2d');
+    const labelWidth = new Map();
+
+    /** 量一段文字在方法芯片字号下的宽度。 */
+    function measureLabelWidth(text) {
+        const key = String(text == null ? '' : text);
+        let w = labelWidth.get(key);
+        if (w !== undefined) return w;
+        labelCtx.font = CHIP_FONT;
+        w = labelCtx.measureText(key).width;
+        if (labelWidth.size > 4000) labelWidth.clear();
+        labelWidth.set(key, w);
+        return w;
+    }
+
+    function chipWidth(n) {
+        return Math.max(46, Math.ceil(measureLabelWidth(n.label)) + BOX.chipPadX);
+    }
 
     // 各类边的目标透明度
     const EDGE_OPACITY = {
@@ -82,6 +112,25 @@
     //  卡片模板
     // ================================================================
 
+    /*
+     * 卡片外壳。两种形态：
+     *   叶子卡：宽度固定，高度由内容撑开 —— 折叠的命名空间/类型就是这种
+     *   托盘：  宽高都由布局算好后写死，正文留空 —— 子节点是独立的 cytoscape 节点，
+     *          排在托盘内部，卡片只负责画个框和标题
+     */
+    function cardShell(kindClass, color, label, bodyHtml, data) {
+        if (data.tray) {
+            const size = `width:${Math.round(data.w)}px;height:${Math.round(data.h)}px;`;
+            return `<div class="mermaid-card tray ${kindClass}" style="border-color:${color};${size}">
+      <div class="mermaid-header" style="background:${color};">${escapeHtml(label)}</div>
+    </div>`;
+        }
+        return `<div class="mermaid-card ${kindClass}" style="border-color:${color};">
+      <div class="mermaid-header" style="background:${color};">${escapeHtml(label)}</div>
+      ${bodyHtml}
+    </div>`;
+    }
+
     function typeCardTpl(data) {
         const color = data.color || '#4c8dff';
         const fields = data.fields || [];
@@ -102,10 +151,7 @@
             sections = '<div class="mermaid-section"><div class="mermaid-line mermaid-empty">(空)</div></div>';
         }
 
-        return `<div class="mermaid-card" style="border-color:${color};">
-      <div class="mermaid-header" style="background:${color};">${escapeHtml(data.label)}</div>
-      ${sections}
-    </div>`;
+        return cardShell('', color, data.label, sections, data);
     }
 
     function nsCardTpl(data) {
@@ -121,15 +167,14 @@
             ? '<div class="mermaid-hint">展开中 · 点击折叠</div>'
             : '<div class="mermaid-hint">点击展开类型</div>';
 
-        return `<div class="mermaid-card ns" style="border-color:${color};">
-      <div class="mermaid-header" style="background:${color};">${escapeHtml(data.label)}</div>
-      <div class="mermaid-section"><div class="mermaid-line">${data.childCount} 个类型</div></div>
-      ${body}
-      ${tail}
-    </div>`;
+        body = `<div class="mermaid-section"><div class="mermaid-line">${data.childCount} 个类型</div></div>`
+            + body + tail;
+
+        return cardShell('ns', color, data.label, body, data);
     }
 
     function estimateSize(n) {
+        if (n.kind === 'method') return { w: chipWidth(n), h: BOX.chipH };
         if (n.kind === 'namespace') {
             const previewLines = Math.min((n.preview || []).length, 6);
             const h = 36 + 18 + (previewLines > 0 ? previewLines * 17 + 10 : 0) + 16;
@@ -161,6 +206,7 @@
                 childCount: n.childCount || 0,
                 preview: n.preview || [],
                 expanded: isContainerExpanded(n.id) ? 1 : 0,
+                tray: n.tray ? 1 : 0, w: n.boxW || 0, h: n.boxH || 0,
             };
         }
         return {
@@ -168,10 +214,12 @@
             color: TYPE_COLORS[n.kind] || '#888',
             fields: n.fields || [],
             methods: n.methods || [],
+            tray: n.tray ? 1 : 0, w: n.boxW || 0, h: n.boxH || 0,
         };
     }
 
     function measureSize(n) {
+        if (n.kind === 'method') return { w: chipWidth(n), h: BOX.chipH };
         const html = n.kind === 'namespace' ? nsCardTpl(cardData(n)) : typeCardTpl(cardData(n));
         const cached = sizeCache.get(html);
         if (cached) return cached;
@@ -229,33 +277,31 @@
                 }
             },
             {
+                // 方法在展开后的类型托盘里是一枚芯片：圆角小方块 + 名字写在里面。
+                // 尺寸由 measureSize()/chipWidth() 算好放进 data(w)/data(h)，
+                // 字体族必须和 CHIP_FONT 一致，否则量出来的宽度对不上。
                 selector: 'node[isMethod]',
                 style: {
                     label: 'data(label)',
-                    'font-size': 9, color: '#333',
-                    'text-valign': 'bottom', 'text-margin-y': 4,
-                    'text-opacity': 0,
-                    'text-background-color': '#ffffff',
-                    'text-background-opacity': 0.9,
-                    'text-background-padding': 2,
-                    shape: 'ellipse',
-                    width: 14, height: 14,
-                    'background-color': 'data(color)',
-                    'background-opacity': 0.75,
-                    'border-width': 1.5, 'border-color': '#ffffff',
-                    'transition-property': 'background-opacity, border-width, border-color',
+                    'font-family': 'Segoe UI, Microsoft YaHei, sans-serif',
+                    'font-size': 10, color: '#33475b',
+                    'text-valign': 'center', 'text-halign': 'center',
+                    'text-wrap': 'none',
+                    shape: 'round-rectangle',
+                    width: 'data(w)', height: 'data(h)',
+                    'background-color': '#ffffff',
+                    'background-opacity': 1,
+                    'border-width': 1.2, 'border-color': 'data(color)',
+                    'transition-property': 'background-color, border-width',
                     'transition-duration': '150ms',
                 }
             },
-            { selector: 'node[isMethod].expanded', style: { 'text-opacity': 1 } },
             {
                 selector: 'node[isMethod].hovered',
                 style: {
-                    'text-opacity': 1,
-                    width: 18, height: 18,
-                    'background-opacity': 1,
+                    'background-color': '#eef4ff',
+                    'border-width': 2,
                     'z-index': 999,
-                    'border-width': 2, 'border-color': '#1a1a1a',
                 }
             },
             {
@@ -436,78 +482,214 @@
     //  布局与位置
     // ================================================================
 
-    function ringPositions(center, count, spec) {
-        const out = [];
-        let placed = 0, ring = 0;
-        while (placed < count && ring < 60) {
-            const radius = spec.radius + ring * spec.spacing;
-            const capacity = Math.max(4, Math.min(
-                Math.floor((2 * Math.PI * radius) / spec.capacity),
-                spec.capacity));
-            const take = Math.min(capacity, count - placed);
-            for (let i = 0; i < take; i++) {
-                const a = (i / take) * Math.PI * 2 - Math.PI / 2 + ring * 0.45;
-                out.push({
-                    x: center.x + Math.cos(a) * radius,
-                    y: center.y + Math.sin(a) * radius,
-                });
+    function copyPos(p) { return { x: p.x, y: p.y }; }
+
+    // —— 容器标题条的高度：从卡片模板里实测一次，别拍脑袋写常数 ——
+    const headerCache = new Map();
+
+    function headerHeight(kind) {
+        let h = headerCache.get(kind);
+        if (h !== undefined) return h;
+        const probe = kind === 'namespace'
+            ? nsCardTpl({ label: 'M', color: '#000', childCount: 0, preview: [], tray: 1, w: 220, h: 200 })
+            : typeCardTpl({ label: 'M', color: '#000', tray: 1, w: 220, h: 200 });
+        sizeHost.innerHTML = probe;
+        const card = sizeHost.firstElementChild;
+        const head = card && card.querySelector('.mermaid-header');
+        h = head ? Math.ceil(head.getBoundingClientRect().height) : 28;
+        sizeHost.innerHTML = '';
+        headerCache.set(kind, h);
+        return h;
+    }
+
+    /** 可见的直接子节点，按「文件 → 行号 → 名字」排序，保证每次重建的位置都一样。 */
+    function visibleChildrenOf(n) {
+        return (state.childrenOf.get(n.id) || [])
+            .map(id => state.nodeById.get(id))
+            .filter(k => k && isVisible(k))
+            .sort((a, b) => String(a.file || '').localeCompare(String(b.file || ''))
+                || (a.line || 0) - (b.line || 0)
+                || String(a.label).localeCompare(String(b.label)));
+    }
+
+    /**
+     * 这个节点在布局树里的父节点。
+     * 父节点不可见、或者父容器没展开时，自己就是一棵树的根
+     * （平铺模式下所有类型都是根，除非它外面的类型被展开了）。
+     */
+    function layoutParentOf(n) {
+        if (!n.parentId) return null;
+        const p = state.nodeById.get(n.parentId);
+        if (!p || !isVisible(p) || !isContainerExpanded(p.id)) return null;
+        return p;
+    }
+
+    /** 货架打包：一行一行铺，行内高度对齐。返回内容尺寸与每项的左上角偏移。 */
+    function shelfPack(items, maxWidth, gapX, gapY) {
+        const rows = [];
+        let cur = [], curW = 0, curH = 0;
+        for (const it of items) {
+            if (cur.length && curW + gapX + it.w > maxWidth) {
+                rows.push({ items: cur, w: curW, h: curH });
+                cur = []; curW = 0; curH = 0;
             }
-            placed += take;
-            ring++;
+            curW += (cur.length ? gapX : 0) + it.w;
+            curH = Math.max(curH, it.h);
+            cur.push(it);
         }
-        while (out.length < count) out.push({ x: center.x, y: center.y });
+        if (cur.length) rows.push({ items: cur, w: curW, h: curH });
+
+        const w = rows.reduce((a, r) => Math.max(a, r.w), 0);
+        const h = rows.reduce((a, r) => a + r.h, 0) + gapY * Math.max(0, rows.length - 1);
+
+        const placed = [];
+        let y = 0;
+        for (const r of rows) {
+            let x = 0;
+            for (const it of r.items) {
+                placed.push({ it: it, x: x, y: y + (r.h - it.h) / 2 });
+                x += it.w + gapX;
+            }
+            y += r.h + gapY;
+        }
+        return { w: w, h: h, placed: placed };
+    }
+
+    /** 分列排布：先填满一列再开下一列。方法芯片用它，读起来就是一张成员表。 */
+    function columnPack(items, cols, gapX, gapY) {
+        const per = Math.ceil(items.length / cols);
+        const columns = [];
+        for (let i = 0; i < items.length; i += per) columns.push(items.slice(i, i + per));
+
+        const colW = columns.map(c => c.reduce((a, it) => Math.max(a, it.w), 0));
+        const colH = columns.map(c => c.reduce((a, it) => a + it.h, 0) + gapY * Math.max(0, c.length - 1));
+
+        const w = colW.reduce((a, x) => a + x, 0) + gapX * Math.max(0, columns.length - 1);
+        const h = colH.reduce((a, x) => Math.max(a, x), 0);
+
+        const placed = [];
+        let x = 0;
+        columns.forEach((c, ci) => {
+            let y = 0;
+            for (const it of c) {
+                placed.push({ it: it, x: x, y: y });
+                y += it.h + gapY;
+            }
+            x += colW[ci] + gapX;
+        });
+        return { w: w, h: h, placed: placed };
+    }
+
+    /**
+     * 一组子节点的排布。
+     *
+     * 方法芯片按「列」排 —— 一列读起来最像成员表；几十个方法时再多开几列，
+     * 免得托盘被拉成一根竖条。
+     *
+     * 其它情况（命名空间里的类型卡片、嵌套类型）用货架打包，但「一行铺多宽」
+     * 不拍一个系数：试几组候选宽度，挑铺出来最接近正方形的那一组。
+     * 拍系数的话，卡片高度稍有变化就会在「挤成一列」和「铺成一条」之间反复横跳。
+     */
+    function packGroup(items, isRoot) {
+        const gapX = isRoot ? BOX.rootGapX : BOX.gapX;
+        const gapY = isRoot ? BOX.rootGapY : BOX.gapY;
+
+        if (!isRoot && items.every(it => it.n.kind === 'method')) {
+            const cols = Math.max(1, Math.min(4, Math.ceil(items.length / BOX.perColumn)));
+            return columnPack(items, cols, gapX, gapY);
+        }
+
+        let maxW = 0, area = 0;
+        for (const it of items) {
+            maxW = Math.max(maxW, it.w);
+            area += (it.w + gapX) * (it.h + gapY);
+        }
+        const base = Math.max(maxW, Math.sqrt(area));
+
+        const candidates = [base, base * 1.25, base * 1.6, base * 2.1];
+        for (let cols = 1; cols <= 5; cols++) candidates.push(maxW * cols + gapX * (cols - 1));
+
+        let best = null;
+        for (const cand of candidates) {
+            const width = Math.max(maxW, Math.min(cand, BOX.maxRow));
+            const packed = shelfPack(items, width, gapX, gapY);
+            const score = Math.abs(Math.log((packed.w + gapX) / (packed.h + gapY)));
+            if (!best || score < best.score) best = { score: score, packed: packed };
+        }
+        return best.packed;
+    }
+
+    /** 自底向上算一棵子树的尺寸，子节点偏移在 kid.dx / kid.dy 里（相对本节点中心）。 */
+    function buildBox(n) {
+        const kids = isContainerExpanded(n.id) ? visibleChildrenOf(n) : [];
+        if (kids.length === 0) {
+            // 叶子：卡片是普通的「标题 + 成员列表」
+            delete n.tray;
+            const s = measureSize(n);
+            return { n: n, w: s.w, h: s.h, kids: null };
+        }
+
+        const built = kids.map(buildBox);
+        const head = headerHeight(n.kind);
+        const inner = packGroup(built, false);
+        const w = Math.max(CARD_WIDTH, Math.ceil(inner.w + BOX.pad * 2));
+        const h = Math.ceil(head + BOX.pad * 2 + inner.h);
+
+        // 托盘：尺寸写死进卡片模板，正文留空给子节点
+        n.tray = true;
+        n.boxW = w;
+        n.boxH = h;
+
+        const placed = inner.placed.map(p => {
+            const b = p.it;
+            return {
+                box: b,
+                dx: -inner.w / 2 + p.x + b.w / 2,
+                dy: -h / 2 + head + BOX.pad + p.y + b.h / 2,
+            };
+        });
+        return { n: n, w: w, h: h, kids: placed };
+    }
+
+    /** 把盒子树的绝对坐标写进结果表。 */
+    function placeBox(box, cx, cy, out) {
+        out.set(box.n.id, { x: cx, y: cy, w: box.w, h: box.h, tray: !!box.kids });
+        if (!box.kids) return;
+        for (const k of box.kids) placeBox(k.box, cx + k.dx, cy + k.dy, out);
+    }
+
+    /**
+     * 整张图的布局。
+     *
+     * 顶层从固定原点向右下铺：展开一个容器只会把后面的东西推开，
+     * 不会让整个画面重新居中 —— 用户记住的相对位置还在。
+     */
+    function computeLayout() {
+        const out = new Map();
+        const roots = state.nodes.filter(n => isVisible(n) && !layoutParentOf(n));
+        if (roots.length === 0) return out;
+
+        const built = roots.map(buildBox);
+        const inner = packGroup(built, true);
+        const originX = -inner.w / 2;
+        const originY = -inner.h / 2;
+        for (const p of inner.placed) {
+            placeBox(p.it, originX + p.x + p.it.w / 2, originY + p.y + p.it.h / 2, out);
+        }
         return out;
     }
 
-    function ringSpecFor(child, parent) {
-        if (!parent) return RING['default'];
-        if (parent.kind === 'namespace') return RING['ns->type'];
-        if (child.kind === 'method') return RING['type->method'];
-        return RING['type->type'];
-    }
-
-    function viewportCenter() {
-        const ext = cy.extent();
-        if (!isFinite(ext.x1) || ext.x2 - ext.x1 <= 0) return { x: 0, y: 0 };
-        return { x: (ext.x1 + ext.x2) / 2, y: (ext.y1 + ext.y2) / 2 };
-    }
-
-    function layoutAll(fit) {
+    function fitView(duration) {
         cy.resize();
         if (cy.nodes().length === 0) return;
-        const sparse = cy.edges().length < cy.nodes().length * 0.5;
-        if (sparse) {
-            cy.layout({
-                name: 'grid',
-                avoidOverlap: true,
-                avoidOverlapPadding: 40,
-                condense: false,
-                padding: 60,
-                fit: false,
-            }).run();
-        } else {
-            cy.layout({
-                name: 'cose',
-                animate: false,
-                randomize: true,
-                padding: 80,
-                nodeRepulsion: 800000,
-                idealEdgeLength: 280,
-                nodeOverlap: 140,
-                componentSpacing: 280,
-                nodeDimensionsIncludeLabels: false,
-                fit: false,
-            }).run();
-        }
-        if (fit) cy.animate({ fit: { padding: 60 } }, { duration: 500, easing: 'ease-out' });
+        cy.animate({ fit: { padding: 60 } }, { duration: duration || 500, easing: 'ease-out' });
     }
 
     // ================================================================
     //  渲染（diff）
     // ================================================================
 
-    function nodeData(n, position) {
-        const size = measureSize(n);
+    function nodeData(n, position, box) {
         if (n.kind === 'namespace') {
             return {
                 data: {
@@ -516,7 +698,8 @@
                     childCount: n.childCount || 0,
                     preview: n.preview || [],
                     expanded: isContainerExpanded(n.id) ? 1 : 0,
-                    w: size.w, h: size.h,
+                    tray: box.tray ? 1 : 0,
+                    w: box.w, h: box.h,
                 },
                 position: position,
             };
@@ -529,6 +712,7 @@
                     color: parent ? (TYPE_COLORS[parent.kind] || '#888') : '#888',
                     isMethod: 1, parentId: n.parentId,
                     file: n.file, line: n.line,
+                    w: box.w, h: box.h,
                 },
                 position: position,
             };
@@ -539,25 +723,27 @@
                 color: TYPE_COLORS[n.kind] || '#888', isType: 1,
                 fields: n.fields || [], methods: n.methods || [],
                 file: n.file, line: n.line,
-                w: size.w, h: size.h,
+                tray: box.tray ? 1 : 0,
+                w: box.w, h: box.h,
             },
             position: position,
         };
     }
 
-    function refreshNodeData(el, n) {
-        const fresh = nodeData(n).data;
+    function refreshNodeData(el, n, box) {
         // 只刷新会变的部分，避免 position 之类的字段被误改
-        el.data('label', fresh.label);
-        el.data('fields', fresh.fields);
-        el.data('methods', fresh.methods);
-        el.data('childCount', fresh.childCount);
-        el.data('preview', fresh.preview);
-        el.data('expanded', fresh.expanded);
-        el.data('file', fresh.file);
-        el.data('line', fresh.line);
-        if (fresh.w) el.data('w', fresh.w);
-        if (fresh.h) el.data('h', fresh.h);
+        const d = nodeData(n, el.position(), box).data;
+        el.data('label', d.label);
+        el.data('fields', d.fields);
+        el.data('methods', d.methods);
+        el.data('childCount', d.childCount);
+        el.data('preview', d.preview);
+        el.data('expanded', d.expanded);
+        el.data('file', d.file);
+        el.data('line', d.line);
+        el.data('tray', d.tray);
+        el.data('w', d.w);
+        el.data('h', d.h);
     }
 
     function kill(el) {
@@ -567,10 +753,41 @@
             { duration: ANIM.fadeDuration, easing: 'ease-in', complete: () => el.remove() });
     }
 
-    function revive(el) {
+    /**
+     * 让一个元素平滑地变成「不透明 + 落到目标位置」。
+     * 正在淡出的元素要先把淡出动画掐掉，否则 remove() 的回调还会把它删掉。
+     */
+    function settle(el, target, reviving, duration) {
         el.stop(true);
-        el.data('dying', 0);
-        el.animate({ style: { opacity: 1 } }, { duration: 150, easing: 'ease-out' });
+        if (reviving) el.data('dying', 0);
+        const props = {};
+        if (target) props.position = copyPos(target);
+        if (reviving) {
+            el.style({ opacity: 0 });
+            props.style = { opacity: 1 };
+        }
+        el.animate(props, { duration: duration, easing: ANIM.easing });
+    }
+
+    /**
+     * 容器「长大」的过程要看得见 —— 直接改 data(w/h) 会让卡片瞬间跳到最终大小，
+     * 展开就变成了「啪」的一下。这里在 rAF 里补间，每帧写一次 data，
+     * cytoscape-node-html-label 会跟着把卡片重排到当前尺寸。
+     */
+    function tweenBox(el, from, to, duration) {
+        // 连续展开/折叠会叠加多条补间，用代次号把旧的踢掉，否则尺寸会被两边来回抢
+        const gen = (state.tweenGen = (state.tweenGen || 0) + 1);
+        const t0 = performance.now();
+        const step = () => {
+            if (el.removed() || el.data('tweenGen') !== gen) return;
+            const k = Math.min(1, (performance.now() - t0) / duration);
+            const e = 1 - Math.pow(1 - k, 3);
+            el.data('w', from.w + (to.w - from.w) * e);
+            el.data('h', from.h + (to.h - from.h) * e);
+            if (k < 1) requestAnimationFrame(step);
+        };
+        el.data('tweenGen', gen);
+        requestAnimationFrame(step);
     }
 
     function render(opts) {
@@ -580,6 +797,11 @@
         const want = new Set();
         for (const n of state.nodes) if (isVisible(n)) want.add(n.id);
 
+        // 布局先算：每个可见节点的大小和位置都在这一份结果里。
+        // 展开一个容器会让它的卡片长大，容器后面的东西跟着重排 —— 这是内嵌布局的必然，
+        // 靠下面的位置动画把这次重排演出来，而不是让画面「跳」一下。
+        const layout = computeLayout();
+
         // —— 节点：淘汰 ——
         cy.nodes().forEach(el => {
             if (want.has(el.id())) return;
@@ -587,55 +809,72 @@
             else el.remove();
         });
 
-        // —— 节点：新增前先算出兄弟顺序，保证环形槽位稳定 ——
-        const siblings = new Map();
-        for (const n of state.nodes) {
-            if (!want.has(n.id) || !n.parentId) continue;
-            let arr = siblings.get(n.parentId);
-            if (!arr) siblings.set(n.parentId, arr = []);
-            arr.push(n.id);
-        }
-
+        // —— 先处理已经在画布上的节点：刷新尺寸/内容 + 平滑过渡到新位置 ——
         const born = [];
         for (const n of state.nodes) {
             if (!want.has(n.id)) continue;
             const el = cy.getElementById(n.id);
-            if (!el.empty()) {
-                if (el.data('dying')) revive(el);
-                else refreshNodeData(el, n);
+            if (el.empty()) { born.push(n); continue; }
+
+            const box = layout.get(n.id);
+            if (!box) continue;
+            const reviving = !!el.data('dying');
+            const prev = { w: el.data('w'), h: el.data('h') };
+            refreshNodeData(el, n, box);
+
+            const grew = Math.abs(prev.w - box.w) > 0.5 || Math.abs(prev.h - box.h) > 0.5;
+            const cur = el.position();
+            const moved = Math.abs(cur.x - box.x) > 0.5 || Math.abs(cur.y - box.y) > 0.5;
+
+            if (!animate) {
+                if (moved) el.position(copyPos(box));
+                if (reviving) { el.stop(true); el.data('dying', 0); el.style({ opacity: 1 }); }
                 continue;
             }
-            born.push(n);
+            if (!moved && !reviving && !grew) continue;
+
+            if (moved || reviving) settle(el, moved ? box : null, reviving, ANIM.moveDuration);
+            if (grew) tweenBox(el, prev, { w: box.w, h: box.h }, ANIM.growDuration);
         }
 
-        for (const n of born) {
-            const parentEl = n.parentId ? cy.getElementById(n.parentId) : null;
-            const hasParent = parentEl && !parentEl.empty();
-            const center = hasParent ? parentEl.position() : viewportCenter();
-            const parentNode = n.parentId ? state.nodeById.get(n.parentId) : null;
-            const ids = siblings.get(n.parentId) || [n.id];
-            const spec = ringSpecFor(n, parentNode);
-            const slots = ringPositions(center, ids.length, spec);
-            const idx = Math.max(0, ids.indexOf(n.id));
-            const target = slots[idx] || center;
+        // —— 新增节点：从容器中心「长」到自己的位置 ——
+        // 注意 position 一定要复制：cytoscape 的 position() 交出的是元素内部那个
+        // position 对象，add() 又会直接引用传进去的对象。共用同一个对象的话，
+        // 动一个等于动全部，整批子节点会全叠在容器上。
+        born.forEach((n, i) => {
+            const box = layout.get(n.id);
+            if (!box) return;
+
+            const parent = layoutParentOf(n);
+            const parentEl = parent ? cy.getElementById(parent.id) : null;
+            const center = parentEl && !parentEl.empty()
+                ? copyPos(parentEl.position())
+                : { x: box.x, y: box.y };
+            const start = {
+                x: center.x + (box.x - center.x) * 0.3,
+                y: center.y + (box.y - center.y) * 0.3,
+            };
 
             let el;
             try {
-                el = cy.add(nodeData(n, center));
+                el = cy.add(nodeData(n, copyPos(animate ? start : box), box));
             } catch (err) {
                 console.warn('[码图] 跳过节点', n, err);
-                continue;
+                return;
             }
-            if (n.kind === 'method') el.addClass('expanded');
-            if (animate) {
-                el.style({ opacity: 0 });
+
+            if (!animate) return;
+            el.style({ opacity: 0 });
+            const delay = Math.min(i * 12, 120);
+            const run = () => {
+                if (el.removed()) return;
                 el.animate(
-                    { position: target, style: { opacity: 1 } },
+                    { position: copyPos(box), style: { opacity: 1 } },
                     { duration: ANIM.growDuration, easing: ANIM.easing });
-            } else {
-                el.position(target);
-            }
-        }
+            };
+            if (delay > 0) setTimeout(run, delay);
+            else run();
+        });
 
         // —— 边 ——
         refreshEdgeList();
@@ -652,7 +891,12 @@
         for (const [id, e] of wantEdges) {
             const el = cy.getElementById(id);
             if (!el.empty()) {
-                if (el.data('dying')) revive(el);
+                if (el.data('dying')) {
+                    el.stop(true);
+                    el.data('dying', 0);
+                    el.animate({ style: { opacity: EDGE_OPACITY[e.kind] || 0.6 } },
+                        { duration: 150, easing: 'ease-out' });
+                }
                 continue;
             }
             if (cy.getElementById(e.source).empty()) continue;
@@ -702,8 +946,8 @@
 
     function refreshHint() {
         const tips = state.mode === 'namespace'
-            ? '单击命名空间展开其中的类型'
-            : '单击类型展开它的方法';
+            ? '单击命名空间：卡片长大，类型排到里面'
+            : '单击类型：卡片长大，方法排到里面';
         setHint(`${tips} · 双击空白折叠全部 · 单击方法跳到源码 · 0 复位 · +/- 缩放 · F12 开发者工具`);
     }
 
@@ -739,13 +983,15 @@
     function expandOneLevel() {
         let changed = false;
         for (const n of state.nodes) {
+            if (!isVisible(n)) continue;
             const isContainer = state.mode === 'namespace' ? n.kind === 'namespace' : isTypeNode(n);
             if (!isContainer) continue;
             if (!state.expanded.has(n.id)) { state.expanded.add(n.id); changed = true; }
         }
         if (!changed) return;
+        // 批量展开是一次大重排，这时候重新取景才不会让用户面对一屏空白
         render({ animate: false });
-        layoutAll(true);
+        fitView();
     }
 
     // ================================================================
@@ -1119,21 +1365,34 @@
             const bb = pos.get(n.id);
             if (!bb) continue;
             if (n.kind === 'method') {
-                ctx.beginPath();
-                ctx.arc(bb.x1 + bb.w / 2, bb.y1 + bb.h / 2, bb.w / 2, 0, Math.PI * 2);
-                ctx.fillStyle = TYPE_COLORS[(state.nodeById.get(n.parentId) || {}).kind] || '#888';
-                ctx.globalAlpha = 0.85;
-                ctx.fill();
-                ctx.globalAlpha = 1;
-                ctx.strokeStyle = '#ffffff';
-                ctx.lineWidth = 1.5;
-                ctx.stroke();
+                drawChip(ctx, n, bb);
                 continue;
             }
             drawCard(ctx, n, bb);
         }
 
         return canvas.toDataURL('image/png');
+    }
+
+    /** 方法芯片：圆角小方块 + 名字写在里面（和画布上的样式一致）。 */
+    function drawChip(ctx, n, box) {
+        const parent = state.nodeById.get(n.parentId);
+        const color = TYPE_COLORS[(parent || {}).kind] || '#888';
+        ctx.save();
+        ctx.beginPath();
+        roundRect(ctx, box.x1, box.y1, box.w, box.h, 4);
+        ctx.fillStyle = '#ffffff';
+        ctx.fill();
+        ctx.lineWidth = 1.2;
+        ctx.strokeStyle = color;
+        ctx.stroke();
+
+        ctx.fillStyle = '#33475b';
+        ctx.font = `${BOX.chipFontSize}px "Segoe UI", "Microsoft YaHei", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(clipText(ctx, n.label, box.w - 8), box.x1 + box.w / 2, box.y1 + box.h / 2);
+        ctx.restore();
     }
 
     /** 把中心连线裁剪到矩形边上，避免线头插进卡片里。 */
@@ -1165,14 +1424,14 @@
         ctx.save();
         ctx.beginPath();
         roundRect(ctx, x, y, w, h, radius);
-        ctx.fillStyle = '#ffffff';
+        ctx.fillStyle = n.tray ? '#fbfcfe' : '#ffffff';
         ctx.fill();
         ctx.lineWidth = n.kind === 'namespace' ? 2 : 1.5;
         ctx.strokeStyle = color;
         ctx.stroke();
 
         // 标题条
-        const headerH = n.kind === 'namespace' ? 28 : 24;
+        const headerH = headerHeight(n.kind);
         ctx.save();
         ctx.beginPath();
         roundRect(ctx, x, y, w, h, radius);
@@ -1186,6 +1445,9 @@
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(clipText(ctx, n.label, w - 16), x + w / 2, y + headerH / 2);
+
+        // 托盘内部留给子节点，正文不画（子节点会各自画在自己的位置上）
+        if (n.tray) { ctx.restore(); return; }
 
         // 正文
         ctx.textAlign = 'left';
@@ -1389,7 +1651,7 @@
 
         whenContainerReady(() => {
             render({ animate: !isNewProject });
-            if (isNewProject || cy.nodes().length === 0) layoutAll(true);
+            if (isNewProject || cy.nodes().length === 0) fitView();
             refreshHint();
             for (const n of stale) requestResolve(n);
         });
@@ -1441,7 +1703,7 @@
             updateFocusBar();
             cy.elements().remove();
             render({ animate: false });
-            layoutAll(true);
+            fitView();
             refreshHint();
         });
     }
@@ -1513,7 +1775,7 @@
             return;
         }
         if (e.key === '/') { e.preventDefault(); if (searchEl) searchEl.focus(); return; }
-        if (e.key === '0') cy.animate({ fit: { padding: 60 } }, { duration: 400, easing: 'ease-out' });
+        if (e.key === '0') fitView(400);
         else if (e.key === '=' || e.key === '+') cy.animate({ zoom: cy.zoom() * 1.2, duration: 200 });
         else if (e.key === '-') cy.animate({ zoom: cy.zoom() / 1.2, duration: 200 });
         else if (e.key === 'Escape') { clearFilter(); collapseAll(); }
@@ -1547,6 +1809,10 @@
         buildJson,
         buildPng,
         measureSize,
+        computeLayout,
+        layoutParentOf,
+        visibleChildrenOf,
+        headerHeight,
         snapshotSummary() {
             const byKind = {};
             for (const n of state.nodes) byKind[n.kind] = (byKind[n.kind] || 0) + 1;

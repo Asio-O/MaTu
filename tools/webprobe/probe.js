@@ -38,6 +38,99 @@ function summarize(cdp, title) {
     });
 }
 
+/*
+ * 布局不变量。
+ *
+ * 这里量的是 cytoscape 的 boundingBox（含节点标签），而不是节点自己的 width/height ——
+ * 方法节点的标签是常显的，只按 14px 的圆点算「没压住」，标签其实已经糊到旁边的卡片上。
+ *
+ * shared 一项专门盯住一个曾经把图毁掉的地雷：cytoscape 的 position() 交出的是元素内部
+ * 那个 position 对象本身，add() 又直接引用传进去的对象。一旦有两条路径共用同一个对象，
+ * 动一个就等于动全部，整批展开的节点会全部叠在容器上。
+ */
+async function layoutReport(cdp) {
+    return JSON.parse(await cdp.eval(`
+        (function () {
+            var app = window.__codemap;
+            var live = app.cy.nodes().filter(function (n) { return !n.data('dying'); });
+            var seen = [], shared = 0;
+            live.forEach(function (n) {
+                var p = n.position();
+                if (seen.indexOf(p) >= 0) shared++; else seen.push(p);
+            });
+            var overlaps = [];
+            // 容器和它自己的后代「重叠」是设计本身（子节点就排在容器里面），不算冲突
+            var ancestors = {};
+            live.forEach(function (n) {
+                var set = {}, cur = app.state.nodeById.get(n.id());
+                while (cur) {
+                    set[cur.id] = 1;
+                    cur = cur.parentId ? app.state.nodeById.get(cur.parentId) : null;
+                }
+                ancestors[n.id()] = set;
+            });
+            for (var i = 0; i < live.length; i++) {
+                for (var j = i + 1; j < live.length; j++) {
+                    if (ancestors[live[i].id()][live[j].id()]) continue;
+                    if (ancestors[live[j].id()][live[i].id()]) continue;
+                    var a = live[i].boundingBox(), b = live[j].boundingBox();
+                    var ox = Math.min(a.x2, b.x2) - Math.max(a.x1, b.x1);
+                    var oy = Math.min(a.y2, b.y2) - Math.max(a.y1, b.y1);
+                    if (ox > 1 && oy > 1) {
+                        overlaps.push(String(live[i].data('label')) + ' × ' +
+                            String(live[j].data('label')) + ' 重叠 ' +
+                            Math.round(ox) + 'x' + Math.round(oy));
+                    }
+                }
+            }
+            var pos = {};
+            live.forEach(function (n) {
+                var p = n.position();
+                pos[n.id()] = [p.x, p.y];
+            });
+            return JSON.stringify({ shared: shared, overlaps: overlaps, pos: pos, count: live.length });
+        })()`));
+}
+
+/*
+ * 内嵌布局的核心不变量：可见子节点必须完整落在它容器的盒子里。
+ * 这一条就是把「展开 = 卡片长大 + 子节点排在内部」钉死；只要有人把子节点甩到容器外面，
+ * 这里立刻会红。
+ */
+async function containmentReport(cdp) {
+    return JSON.parse(await cdp.eval(`
+        (function () {
+            var app = window.__codemap;
+            var bad = [], checked = 0;
+            app.cy.nodes().forEach(function (el) {
+                var n = app.state.nodeById.get(el.id());
+                if (!n) return;
+                var parent = app.layoutParentOf(n);
+                if (!parent) return;
+                var pel = app.cy.getElementById(parent.id);
+                if (pel.empty()) { bad.push(String(n.label) + ' 的容器不在画布上'); return; }
+                checked++;
+                var a = el.boundingBox(), p = pel.boundingBox();
+                if (a.x1 < p.x1 - 1 || a.x2 > p.x2 + 1 || a.y1 < p.y1 - 1 || a.y2 > p.y2 + 1) {
+                    bad.push(String(n.label) + ' 溢出 ' + String(parent.label) +
+                        ' 子[' + [Math.round(a.x1), Math.round(a.y1), Math.round(a.x2), Math.round(a.y2)] +
+                        '] 容器[' + [Math.round(p.x1), Math.round(p.y1), Math.round(p.x2), Math.round(p.y2)] + ']');
+                }
+            });
+            return JSON.stringify({ checked: checked, bad: bad });
+        })()`));
+}
+
+/** 取某个节点的尺寸，「展开后容器必须长大」用它比。 */
+async function nodeSize(cdp, id) {
+    const raw = await cdp.eval(`
+        (function () {
+            var el = window.__codemap.cy.getElementById(${JSON.stringify(id)});
+            return el.empty() ? '' : JSON.stringify([Math.round(el.width()), Math.round(el.height())]);
+        })()`);
+    return raw ? JSON.parse(raw) : null;
+}
+
 // ================================================================
 //  第一 ~ 三阶段：聚合、展开/折叠、L2 精确化
 // ================================================================
@@ -53,17 +146,43 @@ async function stageOneToThree(cdp, check) {
     check('首屏无 JS 错误', before.errors.length === 0);
 
     // —— 点击第一个命名空间 ——
-    await cdp.eval(`
+    const homeLayout = await layoutReport(cdp);
+    check('首屏没有节点叠在一起', homeLayout.overlaps.length === 0,
+        homeLayout.overlaps.slice(0, 2).join(' | '));
+    check('首屏节点各自持有独立的 position 对象', homeLayout.shared === 0,
+        `${homeLayout.shared} 个节点与别的节点共用同一个 position`);
+
+    const nsId = await cdp.eval(`
         (function () {
             var ns = window.__codemap.cy.nodes('[isNs]');
-            if (ns.length) ns[0].emit('tap');
-            return ns.length;
+            return ns.length ? ns[0].id() : '';
         })()`);
-    await sleep(1200);
+    check('取到了要展开的命名空间', !!nsId, String(nsId));
+    const nsSizeBefore = await nodeSize(cdp, nsId);
+
+    await cdp.eval(`window.__codemap.cy.getElementById(${JSON.stringify(nsId)}).emit('tap'); true`);
+    await sleep(1400);
     const expanded = await summarize(cdp, '点击命名空间之后');
     check('命名空间展开后出现了类型节点',
         (await cdp.eval("window.__codemap.cy.nodes('[isType]').length")) > 0);
     check('展开后无 JS 错误', expanded.errors.length === 0);
+
+    const afterNs = await layoutReport(cdp);
+    check('展开命名空间后没有节点叠在一起', afterNs.overlaps.length === 0,
+        afterNs.overlaps.slice(0, 2).join(' | '));
+    check('展开命名空间后仍有独立 position', afterNs.shared === 0,
+        `${afterNs.shared} 个节点与别的节点共用同一个 position`);
+
+    const nsSizeAfter = await nodeSize(cdp, nsId);
+    check('展开后容器卡片长大了',
+        nsSizeBefore && nsSizeAfter && nsSizeAfter[1] > nsSizeBefore[1] + 20 &&
+        nsSizeAfter[0] >= nsSizeBefore[0],
+        `${nsSizeBefore} → ${nsSizeAfter}`);
+
+    const containNs = await containmentReport(cdp);
+    check('展开命名空间后子节点都排在容器内部', containNs.bad.length === 0,
+        `检查 ${containNs.checked} 个 · ${containNs.bad.slice(0, 2).join(' | ')}`);
+    check('展开命名空间确实检查到了子节点', containNs.checked > 0, `${containNs.checked} 个`);
 
     // —— 渲染不变量 ——
     // 1) 卡片节点自身不能有任何可见画法：一旦被画出来，卡片没盖住的边角就会露出
@@ -141,6 +260,35 @@ async function stageOneToThree(cdp, check) {
     check('类型展开后出现了方法节点',
         (await cdp.eval("window.__codemap.cy.nodes('[isMethod]').length")) > 0);
     check('展开类型后无 JS 错误', methods.errors.length === 0);
+
+    const afterType = await layoutReport(cdp);
+    check('展开类型后没有节点叠在一起（按含标签的包围盒比）', afterType.overlaps.length === 0,
+        afterType.overlaps.slice(0, 2).join(' | '));
+    check('展开类型后仍有独立 position', afterType.shared === 0,
+        `${afterType.shared} 个节点与别的节点共用同一个 position`);
+
+    const containType = await containmentReport(cdp);
+    check('展开类型后方法芯片都排在类型卡片内部', containType.bad.length === 0,
+        `检查 ${containType.checked} 个 · ${containType.bad.slice(0, 2).join(' | ')}`);
+    check('嵌套布局确实检查到了子节点', containType.checked > containNs.checked,
+        `${containNs.checked} → ${containType.checked}`);
+
+    const chipBox = await cdp.eval(`
+        (function () {
+            var m = window.__codemap.cy.nodes('[isMethod]');
+            if (!m.length) return '';
+            var el = m[0];
+            return JSON.stringify({
+                w: Math.round(el.width()), h: Math.round(el.height()),
+                label: String(el.data('label')),
+                textOpacity: el.pstyle('text-opacity').value,
+            });
+        })()`);
+    const chip = chipBox ? JSON.parse(chipBox) : null;
+    check('方法芯片按标签量出了宽度', !!chip && chip.w > 40 && chip.h === 22,
+        chip ? `${chip.label} ${chip.w}x${chip.h}` : '(没有方法节点)');
+    check('方法芯片的名字是常显的', !!chip && chip.textOpacity === 1,
+        chip ? String(chip.textOpacity) : '');
     check('L2 语义解析返回了结果', !!l2 && l2.out.length > 0);
 
     if (l2 && l2.out.length) {

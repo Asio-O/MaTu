@@ -244,7 +244,28 @@
             pointer-events: none;
             user-select: none;
             width: 220px;
+            /* 展开后的托盘尺寸是布局算出来的，边框必须算在 width/height 里，
+               否则卡片会比 cytoscape 的节点大一圈，节点从边框底下露出来 */
+            box-sizing: border-box;
         }
+
+        /* 展开后的容器：卡片自己长大成托盘，子节点排在内部。
+           背景必须透明 —— 子节点是画在 canvas 上的，而卡片整层 DOM 盖在 canvas 之上，
+           一旦托盘有底色，内部的子节点就全被糊住了。嵌套关系靠边框和标题表达。 */
+        .mermaid-card.tray {
+            background: transparent;
+            border-radius: 7px;
+            box-shadow: none;
+        }
+
+            .mermaid-card.tray > .mermaid-header {
+                text-align: left;
+                padding-left: 12px;
+            }
+
+            .mermaid-card.tray.ns {
+                border-width: 2px;
+            }
 
         .mermaid-header {
             padding: 5px 10px;
