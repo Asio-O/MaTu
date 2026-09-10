@@ -393,6 +393,10 @@
         preFilterExpanded: null,    // 进入聚焦前的展开集合，退出时还原
         selected: null,             // 最近点击过的节点 id
         edgeList: [],
+        renderEdges: new Map(),     // 投影之后的边（真正画到画布上的那一份）
+        offsets: new Map(),         // 节点 id -> 用户拖出来的位移（相对布局位置）
+        drag: { el: null, last: null, riders: [] },
+        lastLayout: null,           // 最近一次布局结果，拖动时拿它算位移基准
         stats: null,
         drawn: null,
     };
@@ -464,18 +468,183 @@
         return isVisible(p) && isContainerExpanded(p.id);
     }
 
-    function edgeVisible(e) {
+    /** 基础边要不要参与投影：结构边不画，「聚焦」时只放行命中的边。 */
+    function edgeInScope(e) {
         if (e.kind === 'nsContains') return false;
-        const s = state.nodeById.get(e.source);
-        const t = state.nodeById.get(e.target);
-        if (!s || !t) return false;
-        if (!isVisible(s) || !isVisible(t)) return false;
         if (state.filter && state.filter.edges && !state.filter.edges.has(e.id)) return false;
-        if (state.mode === 'namespace' && (e.kind === 'nsInherits' || e.kind === 'nsCalls')) {
-            // 两端命名空间都展开后，类型级边已经表达同样的信息，聚合边退场
-            return !(isContainerExpanded(e.source) && isContainerExpanded(e.target));
-        }
         return true;
+    }
+
+    // ================================================================
+    //  边的「下沉」：容器展开后，聚合边改挂到里面真正参与的子节点上
+    // ================================================================
+
+    /*
+     * 后端的边是逐级聚合出来的：
+     *     calls（方法→方法） → typeCalls（类型→类型） → nsCalls（命名空间→命名空间）
+     *     inherits（类型→类型） → nsInherits（命名空间→命名空间）
+     *
+     * 全折叠时画聚合边是对的 —— 聚合边就是那一层的摘要。但容器一旦展开，摘要就该让位：
+     * 原来连在父卡片上的线，要改连到里面真正调用的那个子节点上。
+     *
+     * 做法：先把这条聚合边顺着聚合链展开到最细一层（nsCalls → typeCalls → calls），
+     * 然后从聚合边的端点沿着路径往下走，只在「这一层容器确实展开了、下一层又在画布上」
+     * 时才往下走一步：
+     *
+     *   走到明细里那个具体节点 → 线的这一端改挂到它身上
+     *   走不动（没展开 / 被聚焦过滤掉）→ 仍然挂在原来的父节点上
+     *
+     * 两端都走下去了，说明明细边自己已经在画同一件事 —— 聚合边整条退场，
+     * 否则会在同一对节点之间画出一条粗的聚合边加一条细的明细边。
+     */
+
+    // 聚合边 → 它的明细边
+    const DRILL = { nsCalls: 'typeCalls', nsInherits: 'inherits', typeCalls: 'calls' };
+
+    /** 从任意节点往上找它所属的命名空间。 */
+    function namespaceOf(id) {
+        let n = state.nodeById.get(id);
+        while (n && n.kind !== 'namespace') n = n.parentId ? state.nodeById.get(n.parentId) : null;
+        return n ? n.id : null;
+    }
+
+    function pushPair(map, key, a, b) {
+        let list = map.get(key);
+        if (!list) map.set(key, list = []);
+        list.push([a, b]);
+    }
+
+    /*
+     * 下钻索引：聚合边的两端 → 明细边。
+     * 按「明细边的两端各自的祖先是不是这条聚合边的两端」建索引，
+     * 所以展开后能一条不落地找到参与其中的子节点。
+     */
+    function buildDrillIndex() {
+        const nsPair = new Map();     // "明细类型|ns1|ns2" -> [[t1,t2], ...]
+        const typePair = new Map();   // "t1|t2"             -> [[m1,m2], ...]
+        for (const e of state.edgeList) {
+            if (e.kind === 'typeCalls' || e.kind === 'inherits') {
+                const s = namespaceOf(e.source), t = namespaceOf(e.target);
+                if (s && t) pushPair(nsPair, `${e.kind}|${s}|${t}`, e.source, e.target);
+            } else if (e.kind === 'calls') {
+                const s = state.nodeById.get(e.source), t = state.nodeById.get(e.target);
+                if (s && s.parentId && t && t.parentId) {
+                    pushPair(typePair, `${s.parentId}|${t.parentId}`, e.source, e.target);
+                }
+            }
+        }
+        return { nsPair: nsPair, typePair: typePair };
+    }
+
+    function lookupDetail(idx, kind, a, b) {
+        if (kind === 'typeCalls') return idx.typePair.get(`${a}|${b}`) || null;
+        return idx.nsPair.get(`${DRILL[kind]}|${a}|${b}`) || null;
+    }
+
+    /*
+     * 一条聚合边展开到最细一层（calls / inherits）的端点对。
+     * 三级聚合表下来的路径是 nsCalls → typeCalls → calls，逐级替换端点即可。
+     * 某一级查不到明细就保留原样 —— L1 的调用边被 L2 精确结果顶掉之后，
+     * 聚合边可能找不到明细了，这时候宁可留着聚合边，也不能把这条线弄丢。
+     */
+    function terminalPairs(e, idx) {
+        let level = [[e.source, e.target]];
+        let kind = e.kind;
+        for (let depth = 0; depth < 3 && DRILL[kind]; depth++) {
+            const next = [];
+            let grew = false;
+            for (const [a, b] of level) {
+                const pairs = lookupDetail(idx, kind, a, b);
+                if (!pairs) { next.push([a, b]); continue; }
+                for (const p of pairs) next.push(p);
+                grew = true;
+            }
+            level = next;
+            kind = DRILL[kind];
+            if (!grew) break;
+        }
+        return level;
+    }
+
+    /**
+     * 从聚合边的端点往下走，走到明细里那个具体节点上。
+     * 只在「这一层容器确实展开了、而且下一层就在画布上」时才往下走一步；
+     * 走不动就停在父节点上 —— 那条线于是仍然挂在父卡片上。
+     *
+     * 展开一个命名空间，线会一路挂到方法上（如果类型也展开着），
+     * 而不是停在中间那一层 —— 用户看的是「这条线到底谁在调谁」。
+     */
+    function descendTo(base, terminal) {
+        if (base === terminal) return base;
+
+        // terminal → base 的路径（reverse 之后 base 的直接子节点在最前）
+        const path = [];
+        let cur = state.nodeById.get(terminal);
+        while (cur && cur.id !== base) {
+            path.push(cur.id);
+            cur = cur.parentId ? state.nodeById.get(cur.parentId) : null;
+        }
+        if (!cur) return base;          // terminal 不在 base 底下（不该发生）
+        path.reverse();
+
+        let at = base;
+        for (const step of path) {
+            if (!canDescend(at) || !isNodeVisible(step)) break;
+            at = step;
+        }
+        return at;
+    }
+
+    /** 这一端的容器展开了吗，展开出来的那一层又确实在画布上吗。 */
+    function canDescend(id) {
+        const n = state.nodeById.get(id);
+        if (!n || !isContainerExpanded(id)) return false;
+        return isVisible(n) && (state.childrenOf.get(id) || []).length > 0;
+    }
+
+    function isNodeVisible(id) {
+        const n = state.nodeById.get(id);
+        return !!n && isVisible(n);
+    }
+
+    /**
+     * 把整张图的边投影成「真正要画的那几条」。
+     * 返回 Map<渲染 id, {id, source, target, kind, bases}>，bases 是这条线对应的基础边 id ——
+     * 「聚焦」过滤器是按基础边命中的，投影后一条线可能对应好几条基础边。
+     *
+     * 渲染时用的还是**基础边自己的类型**：线换了端点，但看上去还是原来那条线
+     * （聚合过来的调用边仍然是聚合调用边的粗细和颜色），一眼能认出「就是它挪过去了」。
+     */
+    function projectEdges() {
+        const idx = buildDrillIndex();
+        const out = new Map();
+
+        for (const e of state.edgeList) {
+            if (!edgeInScope(e)) continue;
+
+            for (const [a, b] of terminalPairs(e, idx)) {
+                const s = descendTo(e.source, a);
+                const t = descendTo(e.target, b);
+                if (s === t) continue;
+                // 沉下去的那一端本身也得在画布上（对面那个命名空间还折叠着时就是这样）
+                if (!isNodeVisible(s) || !isNodeVisible(t)) continue;
+                // 两端都沉下去了 —— 明细边自己已经在画同一件事，这条聚合边退场，
+                // 否则同一对节点之间会同时出现一条粗的聚合边和一条细的明细边
+                if (s !== e.source && t !== e.target) continue;
+
+                const id = `${e.kind}|${s}|${t}`;
+                let r = out.get(id);
+                if (!r) out.set(id, r = { id: id, source: s, target: t, kind: e.kind, bases: [] });
+                if (r.bases.indexOf(e.id) < 0) r.bases.push(e.id);
+            }
+        }
+        return out;
+    }
+
+    /** 聚焦时「这条画出来的线对不对得上命中的基础边」。 */
+    function renderEdgeInFilter(r) {
+        if (!state.filter || !state.filter.edges) return true;
+        return r.bases.some(id => state.filter.edges.has(id));
     }
 
     // ================================================================
@@ -653,9 +822,15 @@
 
     /** 把盒子树的绝对坐标写进结果表。 */
     function placeBox(box, cx, cy, out) {
-        out.set(box.n.id, { x: cx, y: cy, w: box.w, h: box.h, tray: !!box.kids });
+        // 用户拖动过的节点，位移在这里生效。挂在父节点上的位移会被子节点自动继承 ——
+        // 子节点的坐标本来就是从父节点中心推出来的，不需要逐个记。
+        const off = state.offsets.get(box.n.id);
+        const x = cx + (off ? off.dx : 0);
+        const y = cy + (off ? off.dy : 0);
+
+        out.set(box.n.id, { x: x, y: y, w: box.w, h: box.h, tray: !!box.kids });
         if (!box.kids) return;
-        for (const k of box.kids) placeBox(k.box, cx + k.dx, cy + k.dy, out);
+        for (const k of box.kids) placeBox(k.box, x + k.dx, y + k.dy, out);
     }
 
     /**
@@ -667,6 +842,7 @@
     function computeLayout() {
         const out = new Map();
         const roots = state.nodes.filter(n => isVisible(n) && !layoutParentOf(n));
+        state.lastLayout = out;
         if (roots.length === 0) return out;
 
         const built = roots.map(buildBox);
@@ -825,15 +1001,18 @@
             const grew = Math.abs(prev.w - box.w) > 0.5 || Math.abs(prev.h - box.h) > 0.5;
             const cur = el.position();
             const moved = Math.abs(cur.x - box.x) > 0.5 || Math.abs(cur.y - box.y) > 0.5;
+            // 正在被拖的节点，位置归鼠标管，别让补间动画跟它抢
+            const beingDragged = !!state.drag.el && !state.drag.el.removed() && state.drag.el.id() === n.id;
 
             if (!animate) {
-                if (moved) el.position(copyPos(box));
+                if (moved && !beingDragged) el.position(copyPos(box));
                 if (reviving) { el.stop(true); el.data('dying', 0); el.style({ opacity: 1 }); }
                 continue;
             }
             if (!moved && !reviving && !grew) continue;
 
-            if (moved || reviving) settle(el, moved ? box : null, reviving, ANIM.moveDuration);
+            if (moved && !beingDragged) settle(el, box, reviving, ANIM.moveDuration);
+            else if (reviving) settle(el, null, true, ANIM.moveDuration);
             if (grew) tweenBox(el, prev, { w: box.w, h: box.h }, ANIM.growDuration);
         }
 
@@ -877,9 +1056,15 @@
         });
 
         // —— 边 ——
+        // 先投影再比：容器展开后，聚合边会改挂到里面真正参与的子节点上，
+        // 所以「同一批数据」在展开前后画出来的端点可能完全不同。
         refreshEdgeList();
+        const all = projectEdges();
         const wantEdges = new Map();
-        for (const e of state.edgeList) if (edgeVisible(e)) wantEdges.set(e.id, e);
+        for (const [id, r] of all) {
+            if (renderEdgeInFilter(r)) wantEdges.set(id, r);
+        }
+        state.renderEdges = wantEdges;
 
         cy.edges().forEach(el => {
             const e = wantEdges.get(el.id());
@@ -904,7 +1089,12 @@
             const opacity = EDGE_OPACITY[e.kind] || 0.6;
             let added;
             try {
-                added = cy.add({ data: { id: e.id, source: e.source, target: e.target, kind: e.kind } });
+                added = cy.add({
+                    data: {
+                        id: e.id, source: e.source, target: e.target,
+                        kind: e.kind, bases: e.bases,
+                    },
+                });
             } catch (err) {
                 console.warn('[码图] 跳过边', e, err);
                 continue;
@@ -948,7 +1138,8 @@
         const tips = state.mode === 'namespace'
             ? '单击命名空间：卡片长大，类型排到里面'
             : '单击类型：卡片长大，方法排到里面';
-        setHint(`${tips} · 双击空白折叠全部 · 单击方法跳到源码 · 0 复位 · +/- 缩放 · F12 开发者工具`);
+        setHint(`${tips} · 拖动卡片带着子节点走 · 双击空白折叠全部 · 单击方法跳到源码 · ` +
+            `0 复位（含拖动）· +/- 缩放 · F12 开发者工具`);
     }
 
     // ================================================================
@@ -1218,7 +1409,11 @@
     function visibleGraph() {
         const nodes = state.nodes.filter(isVisible);
         const ids = new Set(nodes.map(n => n.id));
-        const edges = state.edgeList.filter(e => edgeVisible(e) && ids.has(e.source) && ids.has(e.target));
+        // 用投影后的边：导出要和画布上看到的一致（展开后线是挂在子节点上的）
+        const edges = [];
+        for (const r of state.renderEdges.values()) {
+            if (ids.has(r.source) && ids.has(r.target)) edges.push(r);
+        }
         return { nodes, edges };
     }
 
@@ -1604,6 +1799,9 @@
             state.requested.clear();
             state.resolutions.clear();
             state.typeSig = new Map();
+            state.offsets.clear();
+            state.drag.el = null;
+            state.drag.riders = [];
             cy.elements().remove();
         }
         if (snap.version <= state.version) return;
@@ -1694,12 +1892,92 @@
             Number(traceDepthEl ? traceDepthEl.value : 3));
     });
 
+    // ================================================================
+    //  拖动
+    // ================================================================
+
+    /*
+     * 托盘里的子节点是「算出来再摆进去」的独立节点，cytoscape 并不知道它们属于谁
+     * （我们没走复合节点那套），所以拖动托盘时里面的东西不会跟着走，会当场散架。
+     * 这里自己把这层包含关系补上：
+     *
+     *   拖动中：把这一帧的位移同步给所有可见后代
+     *   松手后：把「拖离布局位置多远」记进 state.offsets，重排时由 placeBox 生效。
+     *          记在父节点上就够了 —— 子节点坐标从父节点中心推出来，位移自动继承。
+     */
+    function visibleDescendants(el) {
+        const out = [];
+        const stack = [el.id()];
+        while (stack.length) {
+            const pid = stack.pop();
+            for (const cid of (state.childrenOf.get(pid) || [])) {
+                const c = cy.getElementById(cid);
+                if (c.empty()) continue;      // 折叠着的后代不在画布上
+                out.push(c);
+                stack.push(cid);
+            }
+        }
+        return out;
+    }
+
+    /** 这个节点一共被拖离布局位置多远（相对它自己的布局坐标）。 */
+    function rememberDragOffset(el) {
+        const base = state.lastLayout && state.lastLayout.get(el.id());
+        if (!base) return;
+        const cur = el.position();
+        const dx = cur.x - base.x, dy = cur.y - base.y;
+        if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) state.offsets.delete(el.id());
+        else state.offsets.set(el.id(), { dx: dx, dy: dy });
+    }
+
+    /** 清掉手动拖出来的位移，回到自动布局的位置。 */
+    function resetDragOffsets() {
+        if (state.offsets.size === 0) return false;
+        state.offsets.clear();
+        render({ animate: true });
+        return true;
+    }
+
+    cy.on('grab', 'node', evt => {
+        state.drag.el = evt.target;
+        state.drag.last = copyPos(evt.target.position());
+        state.drag.riders = visibleDescendants(evt.target);
+    });
+
+    cy.on('drag', 'node', evt => {
+        const el = evt.target;
+        if (state.drag.el !== el) return;
+        const cur = copyPos(el.position());
+        const dx = cur.x - state.drag.last.x;
+        const dy = cur.y - state.drag.last.y;
+        if (dx === 0 && dy === 0) return;
+        state.drag.last = cur;
+
+        for (const r of state.drag.riders) {
+            if (r.removed() || r.id() === el.id()) continue;
+            const p = r.position();
+            r.position({ x: p.x + dx, y: p.y + dy });
+        }
+        rememberDragOffset(el);
+    });
+
+    cy.on('free', 'node', evt => {
+        if (state.drag.el !== evt.target) return;
+        rememberDragOffset(evt.target);
+        state.drag.el = null;
+        state.drag.riders = [];
+    });
+
     if (modeBtn) {
         modeBtn.addEventListener('click', () => {
             state.mode = state.mode === 'namespace' ? 'type' : 'namespace';
             state.expanded.clear();
             state.filter = null;
             state.preFilterExpanded = null;
+            // 换了聚合模式就是另一套布局，拖动留下的位移不再有意义
+            state.offsets.clear();
+            state.drag.el = null;
+            state.drag.riders = [];
             updateFocusBar();
             cy.elements().remove();
             render({ animate: false });
@@ -1775,7 +2053,9 @@
             return;
         }
         if (e.key === '/') { e.preventDefault(); if (searchEl) searchEl.focus(); return; }
-        if (e.key === '0') fitView(400);
+        // 「0 复位」把视图和手动拖动一起复位：拖过之后如果没有恢复的办法，
+        // 用户就只能一个个拖回去
+        if (e.key === '0') { resetDragOffsets(); fitView(400); }
         else if (e.key === '=' || e.key === '+') cy.animate({ zoom: cy.zoom() * 1.2, duration: 200 });
         else if (e.key === '-') cy.animate({ zoom: cy.zoom() / 1.2, duration: 200 });
         else if (e.key === 'Escape') { clearFilter(); collapseAll(); }
@@ -1798,7 +2078,8 @@
         cy,
         state,
         isVisible,
-        edgeVisible,
+        edgeInScope,
+        projectEdges,
         render,
         // 交互与导出的入口也挂出来，自检脚本可以绕过「另存为」对话框直接验证产物
         runSearch,
@@ -1812,6 +2093,8 @@
         computeLayout,
         layoutParentOf,
         visibleChildrenOf,
+        visibleDescendants,
+        resetDragOffsets,
         headerHeight,
         snapshotSummary() {
             const byKind = {};
@@ -1834,6 +2117,14 @@
                     acc[e.kind] = (acc[e.kind] || 0) + 1;
                     return acc;
                 }, {}),
+                drawnEdgeKinds: [...state.renderEdges.values()].reduce((acc, e) => {
+                    acc[e.kind] = (acc[e.kind] || 0) + 1;
+                    return acc;
+                }, {}),
+                dragged: [...state.offsets.entries()].map(([id, o]) => ({
+                    id, label: (state.nodeById.get(id) || {}).label,
+                    dx: Math.round(o.dx), dy: Math.round(o.dy),
+                })),
                 hint: hint.textContent,
                 stats: statsEl.textContent,
                 analyzer: state.stats ? state.stats.analyzer : '',

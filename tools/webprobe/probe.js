@@ -131,6 +131,160 @@ async function nodeSize(cdp, id) {
     return raw ? JSON.parse(raw) : null;
 }
 
+/*
+ * 「展开后线要改挂到子节点上」。
+ *
+ * 展开一个容器之后，原来连在它卡片上的聚合边应该全部挪到里面真正参与的子节点上；
+ * 还有线挂在已展开的容器卡片上 = 用户看到的那条「连错了」的线。
+ * 只查聚合边（nsCalls / nsInherits / typeCalls）：嵌套归属虚线 typeContains 本来就该
+ * 连在外层类型上，那是它的语义，不是没更新。
+ */
+async function retargetReport(cdp, expandedIds) {
+    return JSON.parse(await cdp.eval(`
+        (function () {
+            var app = window.__codemap;
+            var expanded = ${JSON.stringify(expandedIds)};
+            var label = function (id) {
+                var n = app.state.nodeById.get(id);
+                return n ? String(n.label) : '?' + id;
+            };
+            var isAggregate = function (k) {
+                return k === 'nsCalls' || k === 'nsInherits' || k === 'typeCalls';
+            };
+            var insideOf = function (id, ancestor) {
+                var n = app.state.nodeById.get(id);
+                while (n && n.parentId) {
+                    if (n.parentId === ancestor) return true;
+                    n = app.state.nodeById.get(n.parentId);
+                }
+                return false;
+            };
+
+            var onChild = [], stuck = [], ontoMethods = [];
+            var kindOf = function (id) {
+                var n = app.state.nodeById.get(id);
+                return n ? n.kind : '';
+            };
+            var descendsFrom = function (id) {
+                for (var i = 0; i < expanded.length; i++) if (insideOf(id, expanded[i])) return true;
+                return false;
+            };
+            app.cy.edges().forEach(function (e) {
+                if (e.data('dying')) return;
+                var k = e.data('kind');
+                if (!isAggregate(k)) return;
+                var s = e.data('source'), t = e.data('target');
+                var descends = false;
+                for (var i = 0; i < expanded.length; i++) {
+                    if (insideOf(s, expanded[i]) || insideOf(t, expanded[i])) descends = true;
+                    if (s === expanded[i] || t === expanded[i]) {
+                        stuck.push(k + ': ' + label(s) + ' → ' + label(t));
+                    }
+                }
+                if (descends) onChild.push(k + ': ' + label(s) + ' → ' + label(t));
+                if ((kindOf(s) === 'method' && descendsFrom(s)) ||
+                    (kindOf(t) === 'method' && descendsFrom(t))) {
+                    ontoMethods.push(k + ': ' + label(s) + ' → ' + label(t));
+                }
+            });
+            return JSON.stringify({ onChild: onChild, stuck: stuck, ontoMethods: ontoMethods });
+        })()`));
+}
+
+/*
+ * 用真实鼠标事件拖一个节点。
+ * 不能直接改 position —— 那样绕过了 cytoscape 的抓取/拖动路径，
+ * 「拖动父节点时子节点没跟着走」这类问题根本测不出来。
+ *
+ * 抓取点要试：展开后的托盘可能比窗口还高（顶部在视口外），
+ * 托盘正中又可能正好压着里面的子节点 —— 那样抓到的是子节点，容器不动。
+ * 所以从标题条开始挨个候选点试，直到容器真的动了为止。
+ */
+async function dragNode(cdp, id, dxScreen, dyScreen) {
+    const candidates = JSON.parse(await cdp.eval(`
+        (function () {
+            var app = window.__codemap;
+            var el = app.cy.getElementById(${JSON.stringify(id)});
+            if (el.empty()) return '[]';
+            var rect = app.cy.container().getBoundingClientRect();
+            var rp = el.renderedPosition();
+            var z = app.cy.zoom();
+            var hw = el.width() * z / 2, hh = el.height() * z / 2;
+            var x1 = rp.x - hw, y1 = rp.y - hh, x2 = rp.x + hw, y2 = rp.y + hh;
+            var raw = [
+                [x1 + 24, y1 + 12], [rp.x, y1 + 12],
+                [rp.x, rp.y], [x1 + 24, rp.y], [x2 - 24, rp.y], [rp.x, y2 - 12],
+            ];
+            var pts = [];
+            for (var i = 0; i < raw.length; i++) {
+                var px = raw[i][0], py = raw[i][1];
+                if (px < 4 || py < 4 || px > rect.width - 4 || py > rect.height - 4) continue;
+                pts.push([Math.round(rect.left + px), Math.round(rect.top + py)]);
+            }
+            return JSON.stringify(pts);
+        })()`));
+
+    if (candidates.length === 0) return null;
+
+    const snapshot = `
+        (function () {
+            var app = window.__codemap;
+            var el = app.cy.getElementById(${JSON.stringify(id)});
+            if (el.empty()) return 'null';
+            var kids = app.visibleDescendants(el);
+            var pos = {};
+            kids.forEach(function (k) {
+                var p = k.position();
+                pos[k.id()] = [p.x, p.y];
+            });
+            var p0 = el.position();
+            var off = app.state.offsets.get(el.id()) || null;
+            return JSON.stringify({
+                self: [p0.x, p0.y], kids: pos, kidCount: kids.length, offset: off,
+            });
+        })()`;
+
+    for (let attempt = 0; attempt < candidates.length; attempt++) {
+        // 上一次可能抓到了子节点并把它拖走了，先复位
+        await cdp.eval('window.__codemap.resetDragOffsets(); true');
+        await sleep(260);
+
+        const before = JSON.parse(await cdp.eval(snapshot));
+        const [x, y] = candidates[attempt];
+
+        await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: x, y: y, buttons: 0 });
+        await cdp.send('Input.dispatchMouseEvent', {
+            type: 'mousePressed', x: x, y: y, button: 'left', buttons: 1, clickCount: 1,
+        });
+        for (let i = 1; i <= 8; i++) {
+            await sleep(30);
+            await cdp.send('Input.dispatchMouseEvent', {
+                type: 'mouseMoved', x: x + Math.round(dxScreen * i / 8),
+                y: y + Math.round(dyScreen * i / 8), button: 'left', buttons: 1,
+            });
+        }
+        await sleep(50);
+        await cdp.send('Input.dispatchMouseEvent', {
+            type: 'mouseReleased', x: x + dxScreen, y: y + dyScreen,
+            button: 'left', buttons: 0, clickCount: 1,
+        });
+        await sleep(320);
+
+        const after = JSON.parse(await cdp.eval(snapshot));
+        const moved = Math.abs(after.self[0] - before.self[0]) > 5 ||
+            Math.abs(after.self[1] - before.self[1]) > 5;
+        if (moved) {
+            // 鼠标挪开：不然光标还悬停在卡片上，后面「卡片节点自身不被绘制」那条
+            // 会量到悬停时才有的虚线边框（那是设计的一部分，不是绘制泄漏）
+            await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 3, y: 3, buttons: 0 });
+            await sleep(120);
+            return { before: before, after: after, attempts: attempt + 1 };
+        }
+    }
+    await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 3, y: 3, buttons: 0 });
+    return null;
+}
+
 // ================================================================
 //  第一 ~ 三阶段：聚合、展开/折叠、L2 精确化
 // ================================================================
@@ -184,7 +338,57 @@ async function stageOneToThree(cdp, check) {
         `检查 ${containNs.checked} 个 · ${containNs.bad.slice(0, 2).join(' | ')}`);
     check('展开命名空间确实检查到了子节点', containNs.checked > 0, `${containNs.checked} 个`);
 
+    // —— 展开之后，原来连在父卡片上的线要改挂到里面真正参与的子节点上 ——
+    const nsRetarget = await retargetReport(cdp, [nsId]);
+    check('展开命名空间后聚合边改挂到了内部节点上', nsRetarget.onChild.length > 0,
+        nsRetarget.onChild.slice(0, 3).join(' | '));
+    check('没有聚合边还挂在已展开的命名空间卡片上', nsRetarget.stuck.length === 0,
+        nsRetarget.stuck.join(' | '));
+
+    // —— 拖动容器：里面的子节点必须整体跟着走 ——
+    const drag = await dragNode(cdp, nsId, 130, 70);
+    const selfDelta = drag
+        ? [drag.after.self[0] - drag.before.self[0], drag.after.self[1] - drag.before.self[1]]
+        : [0, 0];
+    check('鼠标能把容器拖走', !!drag && (Math.abs(selfDelta[0]) > 20 || Math.abs(selfDelta[1]) > 20),
+        drag ? `第 ${drag.attempts} 个抓取点生效，位移 ${selfDelta.map(v => Math.round(v)).join(',')}`
+            + `（容器里有 ${drag.before.kidCount} 个后代）`
+            : '所有候选抓取点都没抓到容器');
+
+    const kidDeltas = drag ? Object.entries(drag.after.kids).map(([id, p]) => {
+        const b = drag.before.kids[id];
+        return b ? [p[0] - b[0], p[1] - b[1]] : null;
+    }).filter(Boolean) : [];
+    const followedAll = !!drag && kidDeltas.length === drag.before.kidCount && kidDeltas.length > 0 &&
+        kidDeltas.every(d => Math.abs(d[0] - selfDelta[0]) < 1.5 && Math.abs(d[1] - selfDelta[1]) < 1.5);
+    check('拖动容器时子节点跟着一起走', followedAll,
+        drag ? `${kidDeltas.length}/${drag.before.kidCount} 个后代的位移与容器一致` : '(没拖动成功)');
+
+    // 重排一次：拖动留下的位移必须被记住，卡片不能弹回自动布局的位置
+    const kept = JSON.parse(await cdp.eval(`
+        (function () {
+            var app = window.__codemap;
+            var el = app.cy.getElementById(${JSON.stringify(nsId)});
+            var a = el.position();
+            app.render({ animate: false });
+            var b = el.position();
+            return JSON.stringify({ a: [a.x, a.y], b: [b.x, b.y] });
+        })()`));
+    check('拖动的位置在重新布局后不弹回',
+        Math.abs(kept.a[0] - kept.b[0]) < 1 && Math.abs(kept.a[1] - kept.b[1]) < 1,
+        `[${kept.a.map(v => Math.round(v)).join(',')}] → [${kept.b.map(v => Math.round(v)).join(',')}]`);
+
+    // 复位，免得后面的断言都在一个被拖歪的布局上做
+    await cdp.eval('window.__codemap.resetDragOffsets(); true');
+    await sleep(500);
+    const reset = JSON.parse(await cdp.eval('JSON.stringify(window.__codemap.snapshotSummary().dragged)'));
+    check('「0 复位」清得掉拖动位移', reset.length === 0, `${reset.length} 个残留`);
+
     // —— 渲染不变量 ——
+    // 上面的拖动测试把光标留在了卡片上，悬停高亮（虚线边框）是设计的一部分，
+    // 先摘掉再验「卡片自身不被绘制」，免得把悬停当成绘制泄漏。
+    await cdp.eval("window.__codemap.cy.nodes('.hovered').removeClass('hovered'); true");
+
     // 1) 卡片节点自身不能有任何可见画法：一旦被画出来，卡片没盖住的边角就会露出
     //    一整块底色（曾经是纯黑矩形 + 虚线边：cytoscape 没有 :hover 伪类，未知伪类
     //    被当成恒真条件；同时背景填充会忽略 background-color 自带的 alpha）。
@@ -222,17 +426,18 @@ async function stageOneToThree(cdp, check) {
     check('节点尺寸与卡片实测尺寸一致', sized.length === 0, sized.slice(0, 3).join(' | '));
 
     // —— 点击方法最多的那个类型，触发 L2 语义精确化 ——
-    const picked = await cdp.eval(`
+    const pickedRaw = await cdp.eval(`
         (function () {
             var t = window.__codemap.cy.nodes('[isType]')
                 .sort(function (a, b) {
                     return (b.data('methods') || []).length - (a.data('methods') || []).length;
                 });
-            if (!t.length) return null;
+            if (!t.length) return '';
             t[0].emit('tap');
-            return t[0].data('label');
+            return JSON.stringify({ id: t[0].id(), label: String(t[0].data('label')) });
         })()`);
-    check('找到了可展开的类型', !!picked, String(picked));
+    const pickedType = pickedRaw ? JSON.parse(pickedRaw) : null;
+    check('找到了可展开的类型', !!pickedType, pickedType ? pickedType.label : '(没有类型节点)');
 
     // 等 L2 回来（首次要建立编译，给足时间）
     let l2 = null;
@@ -272,6 +477,17 @@ async function stageOneToThree(cdp, check) {
         `检查 ${containType.checked} 个 · ${containType.bad.slice(0, 2).join(' | ')}`);
     check('嵌套布局确实检查到了子节点', containType.checked > containNs.checked,
         `${containNs.checked} → ${containType.checked}`);
+
+    // 展开的类型上也不该再挂着聚合线：调用边要落到具体的方法上
+    if (pickedType) {
+        const typeRetarget = await retargetReport(cdp, [nsId, pickedType.id]);
+        check('展开类型后调用边也改挂到了方法上',
+            typeRetarget.ontoMethods.length > 0,
+            typeRetarget.ontoMethods.slice(0, 2).join(' | ') ||
+            typeRetarget.onChild.slice(0, 2).join(' | '));
+        check('没有聚合边还挂在已展开的类型卡片上', typeRetarget.stuck.length === 0,
+            typeRetarget.stuck.join(' | '));
+    }
 
     const chipBox = await cdp.eval(`
         (function () {
