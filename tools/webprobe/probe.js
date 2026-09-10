@@ -682,6 +682,70 @@ async function insideParent(cdp, id) {
 
 async function stageFive(cdp, check) {
     console.log('\n== 第五阶段：界面 ==');
+
+    // —— 点开容器：它自己必须立刻落到新布局位置上 ——
+    // 这条要用真实鼠标：cytoscape 的事件顺序是 grab → tap → free，点开一个容器的
+    // 那次渲染发生在 tap 里，那时鼠标还按在这个节点上。只看「鼠标按着」就当成
+    // 「正在拖动」的话，这一轮会跳过它的落位 —— 卡片留在原地、子节点按新布局散开，
+    // 看起来就是「子节点掉在父容器外面」。测量点要早于落地校正（780ms），
+    // 否则兜底的那一下会把缺陷盖过去。
+    const opened = JSON.parse(await cdp.eval(`
+        (function () {
+            var app = window.__codemap, s = app.state;
+            if (s.mode !== 'type') document.getElementById('modeBtn').click();
+            s.expanded.clear();
+            s.offsets.clear();
+            app.render({ animate: false });
+            var el = app.cy.nodes('[isType]').sort(function (a, b) {
+                return (b.data('methods') || []).length - (a.data('methods') || []).length;
+            })[0];
+            if (!el) return JSON.stringify({ skip: true });
+            var p = el.renderedPosition();
+            var lp = el.position();
+            return JSON.stringify({
+                skip: false, id: el.id(), label: String(el.data('label')),
+                x: Math.round(p.x), y: Math.round(p.y),
+                layoutBefore: [Math.round(lp.x), Math.round(lp.y)],
+            });
+        })()`));
+
+    if (opened.skip) {
+        check('点开容器后它立刻落到新布局位置（没有类型节点，跳过）', true);
+    } else {
+        await cdp.send('Input.dispatchMouseEvent', {
+            type: 'mouseMoved', x: opened.x, y: opened.y, buttons: 0,
+        });
+        await cdp.send('Input.dispatchMouseEvent', {
+            type: 'mousePressed', x: opened.x, y: opened.y, button: 'left', buttons: 1, clickCount: 1,
+        });
+        await cdp.send('Input.dispatchMouseEvent', {
+            type: 'mouseReleased', x: opened.x, y: opened.y, button: 'left', buttons: 0, clickCount: 1,
+        });
+        await sleep(420);
+
+        const landed = JSON.parse(await cdp.eval(`
+            (function () {
+                var app = window.__codemap, s = app.state, cy = app.cy;
+                var el = cy.getElementById(${JSON.stringify(opened.id)});
+                var box = s.lastLayout.get(${JSON.stringify(opened.id)});
+                if (el.empty() || !box) return JSON.stringify({ skip: true });
+                var p = el.position();
+                return JSON.stringify({
+                    skip: false,
+                    expanded: s.expanded.has(${JSON.stringify(opened.id)}),
+                    deviation: Math.round(Math.hypot(p.x - box.x, p.y - box.y)),
+                    layoutAfter: [Math.round(box.x), Math.round(box.y)],
+                });
+            })()`));
+        // 鼠标挪开：不然光标停在卡片上，后面的检查会量到悬停态
+        await cdp.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 3, y: 3, buttons: 0 });
+
+        check('点开容器后它立刻落到新布局位置（早于落地校正）',
+            !landed.skip && landed.expanded && landed.deviation <= 1,
+            `${opened.label}：布局 ${JSON.stringify(opened.layoutBefore)} → ` +
+            `${JSON.stringify(landed.layoutAfter)}，偏离 ${landed.deviation}px`);
+    }
+
     const before = JSON.parse(await cdp.eval(`
         (function () {
             var c = document.querySelector('.mermaid-card');
@@ -800,9 +864,11 @@ async function stageFive(cdp, check) {
     await sleep(900);
 
     // —— 悬停高亮：无关的边压暗，移开恢复 ——
-    // 先把画面停稳：淡出中的边透明度本来就是 0 附近，会污染这里的基准
+    // 先把画面停稳：淡出中的边透明度本来就是 0 附近，会污染这里的基准。
+    // L2 解析会异步回来再渲染一轮，所以先等所有动画结束，再铺一帧静态的
+    await settleAnimations(cdp);
     await cdp.eval('window.__codemap.render({ animate: false }); true');
-    await sleep(400);
+    await sleep(150);
     const spot = JSON.parse(await cdp.eval(`
         (function () {
             var app = window.__codemap;
@@ -1005,6 +1071,20 @@ async function stageFive(cdp, check) {
         fillRatio > 0.45 && fillRatio < 2.2,
         `${fill.nodes} 个节点：内容 ${fill.contentAspect.toFixed(2)} : 工作区 ` +
         `${fill.canvasAspect.toFixed(2)}（比值 ${fillRatio.toFixed(2)}）`);
+}
+
+/**
+ * 等到页面上没有元素在动为止。
+ * L2 语义解析是异步回来的，它落地时会再渲染一轮；不等它，
+ * 后面那些「量一个静止画面」的断言会量到动画中间帧。
+ */
+async function settleAnimations(cdp, timeoutMs = 5000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        if (!(await cdp.eval('window.__codemap.cy.elements().animated()'))) return true;
+        await sleep(120);
+    }
+    return false;
 }
 
 // ================================================================

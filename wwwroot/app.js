@@ -1337,8 +1337,13 @@
             const grew = Math.abs(prev.w - box.w) > 0.5 || Math.abs(prev.h - box.h) > 0.5;
             const cur = el.position();
             const moved = Math.abs(cur.x - box.x) > 0.5 || Math.abs(cur.y - box.y) > 0.5;
-            // 正在被拖的节点，位置归鼠标管，别让补间动画跟它抢
-            const beingDragged = !!state.drag.el && !state.drag.el.removed() && state.drag.el.id() === n.id;
+            // 正在被拖的节点，位置归鼠标管，别让补间动画跟它抢。
+            // 判据里必须有 state.drag.moved：cytoscape 的事件顺序是 grab → tap → free，
+            // 而「点开一个容器」的那次渲染正好发生在 tap 里 —— 那时鼠标当然还按在这个
+            // 节点上。只看「鼠标按着」的话，这一轮会跳过它的落位：卡片留在原地，
+            // 子节点却按新布局散开，看起来就是「子节点掉在父容器外面」。
+            const beingDragged = state.drag.moved &&
+                !!state.drag.el && !state.drag.el.removed() && state.drag.el.id() === n.id;
 
             if (!animate) {
                 if (moved && !beingDragged) el.position(copyPos(box));
@@ -1496,7 +1501,8 @@
         clearTimeout(state.reconcileTimer);
         state.reconcileTimer = setTimeout(() => {
             if (gen !== state.renderGen) return;                  // 又渲染过了，交给新一轮
-            if (state.drag.el && !state.drag.el.removed()) return; // 正在拖，别插手
+            // 真拖着的时候别插手（只是点了一下不算，见 render 里的 beingDragged）
+            if (state.drag.moved && state.drag.el && !state.drag.el.removed()) return;
             cy.nodes().forEach(el => {
                 if (el.data('dying')) return;
                 const box = state.lastLayout && state.lastLayout.get(el.id());
