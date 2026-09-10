@@ -931,6 +931,29 @@ async function stageFive(cdp, check) {
     const after = JSON.parse(await cdp.eval('JSON.stringify(window.__codemap.snapshotSummary())'));
     check('界面操作全程无 JS 错误', after.errors.length === 0, after.errors.slice(0, 2).join(' | '));
     check('重新分析后没有卡在「进行中」', after.busy === false);
+
+    // —— 铺满工作区：顶层是照工作区长宽比铺的，不能挤成一根竖条 ——
+    // 宽窗口里挤成竖条 = 两边全是空白、字还小，这是最容易被忽略的一种「布局不对」
+    const fill = JSON.parse(await cdp.eval(`
+        (function () {
+            var app = window.__codemap, cy = app.cy;
+            if (app.state.mode !== 'type') document.getElementById('modeBtn').click();
+            app.state.expanded.clear();
+            app.render({ animate: false });
+            var bb = cy.elements().boundingBox();
+            var tb = document.getElementById('toolbar').offsetHeight;
+            return JSON.stringify({
+                bbox: [Math.round(bb.w), Math.round(bb.h)],
+                contentAspect: bb.w / bb.h,
+                canvasAspect: cy.width() / (cy.height() - tb),
+                nodes: cy.nodes().length,
+            });
+        })()`));
+    const fillRatio = fill.contentAspect / fill.canvasAspect;
+    check('顶层按工作区长宽比铺开（不是一根竖条）',
+        fillRatio > 0.45 && fillRatio < 2.2,
+        `${fill.nodes} 个节点：内容 ${fill.contentAspect.toFixed(2)} : 工作区 ` +
+        `${fill.canvasAspect.toFixed(2)}（比值 ${fillRatio.toFixed(2)}）`);
 }
 
 // ================================================================

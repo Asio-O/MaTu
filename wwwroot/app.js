@@ -1016,9 +1016,13 @@
      * 方法芯片按「列」排 —— 一列读起来最像成员表；几十个方法时再多开几列，
      * 免得托盘被拉成一根竖条。
      *
-     * 其它情况（命名空间里的类型卡片、嵌套类型）用货架打包，但「一行铺多宽」
-     * 不拍一个系数：试几组候选宽度，挑铺出来最接近正方形的那一组。
+     * 其它情况用货架打包，但「一行铺多宽」不拍一个系数：试几组候选宽度，
+     * 挑铺出来最接近目标长宽比的那一组。
      * 拍系数的话，卡片高度稍有变化就会在「挤成一列」和「铺成一条」之间反复横跳。
+     *
+     * 目标长宽比分两种：**顶层跟着画布走** —— 内容要铺满整个工作区，
+     * 宽窗口里挤成一根竖条是没意义的（两边全是空白，字还小）；
+     * 容器内部仍然尽量接近正方形，免得一个托盘被拉成一条横幅。
      */
     function packGroup(items, isRoot) {
         const gapX = isRoot ? BOX.rootGapX : BOX.gapX;
@@ -1034,19 +1038,43 @@
             maxW = Math.max(maxW, it.w);
             area += (it.w + gapX) * (it.h + gapY);
         }
-        const base = Math.max(maxW, Math.sqrt(area));
 
+        const targetAspect = isRoot ? viewportAspect() : 1;
+        const cap = isRoot ? Infinity : BOX.maxRow;
+
+        const base = Math.max(maxW, Math.sqrt(area));
         const candidates = [base, base * 1.25, base * 1.6, base * 2.1];
-        for (let cols = 1; cols <= 5; cols++) candidates.push(maxW * cols + gapX * (cols - 1));
+        // 每个「一行放几列」的宽度都算一个候选：卡片宽度基本一致，
+        // 这样能把可选的列数全试一遍，而不是只试头几个
+        const maxCols = Math.min(items.length, 40);
+        for (let cols = 1; cols <= maxCols; cols++) {
+            candidates.push(maxW * cols + gapX * (cols - 1));
+        }
+        if (isRoot && items.length > maxCols) {
+            candidates.push(items.length * maxW + gapX * (items.length - 1));
+        }
 
         let best = null;
         for (const cand of candidates) {
-            const width = Math.max(maxW, Math.min(cand, BOX.maxRow));
+            const width = Math.max(maxW, Math.min(cand, cap));
             const packed = shelfPack(items, width, gapX, gapY);
-            const score = Math.abs(Math.log((packed.w + gapX) / (packed.h + gapY)));
+            const ratio = (packed.w + gapX) / (packed.h + gapY);
+            const score = Math.abs(Math.log(ratio / targetAspect));
             if (!best || score < best.score) best = { score: score, packed: packed };
         }
         return best.packed;
+    }
+
+    /**
+     * 工作区的长宽比：画布尺寸扣掉顶部工具条（它浮在画布上）。
+     * 顶层打包按这个比例铺，内容才会铺满工作区。
+     */
+    function viewportAspect() {
+        const w = cy.width();
+        const toolbarEl = document.getElementById('toolbar');
+        const h = cy.height() - (toolbarEl ? toolbarEl.offsetHeight : 48);
+        if (!(w > 0) || !(h > 0)) return 1.6;   // 还没量出尺寸时给个常见的宽屏比例
+        return w / h;
     }
 
     /** 自底向上算一棵子树的尺寸，子节点偏移在 kid.dx / kid.dy 里（相对本节点中心）。 */
@@ -2814,6 +2842,18 @@
         if (scheme.addEventListener) scheme.addEventListener('change', onScheme);
         else if (scheme.addListener) scheme.addListener(onScheme);
     }
+
+    // 窗口尺寸变了就按新比例重铺一次：顶层是照工作区长宽比铺的，
+    // 不重排的话内容会停在旧比例上 —— 窗口拉宽了，两侧反而空出一大片。
+    // 只重排、不动相机：用户自己挪过的视角不该被窗口一拉伸就夺走。
+    let resizeTimer = null;
+    window.addEventListener('resize', () => {
+        if (resizeTimer) clearTimeout(resizeTimer);
+        resizeTimer = setTimeout(() => {
+            cy.resize();
+            if (cy.nodes().length > 0) render({ animate: false });
+        }, 220);
+    });
 
     renderHelp();
     renderLegend();
