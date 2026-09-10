@@ -655,6 +655,8 @@
         renderEdges: new Map(),     // 投影之后的边（真正画到画布上的那一份）
         offsets: new Map(),         // 节点 id -> 用户拖出来的位移（相对布局位置）
         drag: { el: null, last: null, riders: [], moved: false },
+        renderGen: 0,               // 渲染代次：异步收尾动作靠它判断自己是不是过期了
+        reconcileTimer: null,       // 落地校正的定时器
         lastLayout: null,           // 最近一次布局结果，拖动时拿它算位移基准
         lastPureLayout: null,       // 同一份布局的「不含位移」坐标，拖动记位移用
         stats: null,
@@ -1229,6 +1231,8 @@
 
     function refreshNodeData(el, n, box) {
         // 只刷新会变的部分，避免 position 之类的字段被误改
+        // 顺便掐掉可能还在跑的尺寸补间：它会把 w/h 写回上一轮布局的值
+        el.data('tweenGen', null);
         const d = nodeData(n, el.position(), box).data;
         el.data('label', d.label);
         el.data('fields', d.fields);
@@ -1297,6 +1301,10 @@
     function render(opts) {
         opts = opts || {};
         const animate = opts.animate !== false;
+
+        // 这一轮的代次号。异步的收尾动作（出生动画、落地校正）靠它判断自己是不是已经过期：
+        // 过期的写入会把节点钉在「上一轮布局」的位置上，那正是「子节点跑到父容器外面」的成因。
+        const renderGen = state.renderGen = (state.renderGen || 0) + 1;
 
         const want = new Set();
         for (const n of state.nodes) if (isVisible(n)) want.add(n.id);
@@ -1377,8 +1385,13 @@
             if (!animate) return;
             el.style({ opacity: 0 });
             const delay = Math.min(i * 12, 120);
+            const myGen = renderGen;
             const run = () => {
                 if (el.removed()) return;
+                // 出生动画是延迟起的：这中间只要又渲染过一轮（保存触发的重建、L2 回来、
+                // 切主题、改窗口大小），这一轮就作废 —— 否则它会拿着上一轮布局的坐标
+                // 把节点钉在那儿，看起来就是「子节点没待在父容器里」。
+                if (state.renderGen !== myGen) return;
                 el.animate(
                     { position: copyPos(box), style: { opacity: 1 } },
                     { duration: ANIM.growDuration, easing: ANIM.easing });
@@ -1460,8 +1473,45 @@
             else spotlight(hoverEl);
         }
 
+        // 拖动途中如果有人渲染了一轮（保存触发的重建、L2 回来），新上画布的子节点
+        // 不在 riders 名单里，后面的拖动就带不上它们 —— 重新取一次名单。
+        if (state.drag.el && !state.drag.el.removed()) {
+            state.drag.riders = visibleDescendants(state.drag.el);
+        }
+        scheduleReconcile();
+
         state.drawn = { nodes: want.size, edges: wantEdges.size };
         updateStats();
+    }
+
+    /**
+     * 落地校正：一轮动画播完之后，核对每个节点是不是真的落在布局位置上，差得多的直接摆正。
+     *
+     * 正常情况下这里什么都不做。它是给这类情况兜底的：位置被某个过期的异步回调
+     * （延迟起的出生动画、被打断的补间、拖动途中重排）改过，而后面又没有任何渲染
+     * 来收尾 —— 表现出来就是「子节点跑到父容器外面」，而且一直不回去。
+     */
+    function scheduleReconcile() {
+        const gen = state.renderGen;
+        clearTimeout(state.reconcileTimer);
+        state.reconcileTimer = setTimeout(() => {
+            if (gen !== state.renderGen) return;                  // 又渲染过了，交给新一轮
+            if (state.drag.el && !state.drag.el.removed()) return; // 正在拖，别插手
+            cy.nodes().forEach(el => {
+                if (el.data('dying')) return;
+                const box = state.lastLayout && state.lastLayout.get(el.id());
+                if (!box) return;
+                const p = el.position();
+                if (Math.abs(p.x - box.x) > 1 || Math.abs(p.y - box.y) > 1) {
+                    el.stop(true);
+                    el.position(copyPos(box));
+                }
+                if (Math.abs(el.data('w') - box.w) > 1 || Math.abs(el.data('h') - box.h) > 1) {
+                    el.data('w', box.w);
+                    el.data('h', box.h);
+                }
+            });
+        }, ANIM.growDuration + 360);
     }
 
     function updateStats() {
@@ -2573,10 +2623,14 @@
         if (state.drag.el !== evt.target) return;
         // 只是点一下（没有真的拖动）就别记位移：布局动画还在跑的时候，
         // 节点当下只是动画的中间帧，拿它当基准会把卡片钉在一个谁也没拖过的位置上。
-        if (state.drag.moved) rememberDragOffset(evt.target);
+        const moved = state.drag.moved;
+        if (moved) rememberDragOffset(evt.target);
         state.drag.el = null;
         state.drag.riders = [];
         state.drag.moved = false;
+        // 松手后排一次版：位置不会再变（算出来就是刚放下的地方），
+        // 但位移表、布局坐标、卡片尺寸都回到彼此一致的状态 —— 落地校正才有个准头。
+        if (moved) render({ animate: true });
     });
 
     // ================================================================

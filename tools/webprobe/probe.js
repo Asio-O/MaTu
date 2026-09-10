@@ -910,6 +910,57 @@ async function stageFive(cdp, check) {
                 Math.abs(twice.second[1] - twice.first[1]) > 1,
                 `${JSON.stringify(twice.first)} → ${JSON.stringify(twice.second)}`);
 
+            // 拖动途中若有人重排（保存触发的重建、L2 回来），刚重建出来的子节点
+            // 也必须继续跟着托盘走 —— 不然松手之后它就落在托盘外面，而且再也回不去
+            const churn = JSON.parse(await cdp.eval(`
+                (function () {
+                    var app = window.__codemap, cy = app.cy;
+                    var tray = cy.nodes('[isNs]')[0];
+                    var child = cy.nodes('[isType]')[0];
+                    if (!tray || !child) return JSON.stringify({ skip: true });
+                    var id = child.id();
+                    tray.emit('grab');
+                    var p0 = tray.position();
+                    tray.position({ x: p0.x + 180, y: p0.y + 120 });
+                    tray.emit('drag');
+                    // 拖动途中刷新一次，而且可见集合变了：这个子节点被移除又重建
+                    cy.getElementById(id).remove();
+                    app.render({ animate: false });
+                    var p1 = tray.position();
+                    tray.position({ x: p1.x + 180, y: p1.y + 120 });
+                    tray.emit('drag');
+                    tray.emit('free');
+                    return JSON.stringify({ skip: false, id: id });
+                })()`));
+            if (!churn.skip) {
+                await sleep(1400);
+                check('拖动途中重排后，重建出来的子节点仍跟着容器走',
+                    (await insideParent(cdp, churn.id)) === 'true');
+            }
+
+            // 过期的异步写入（延迟起的出生动画、被打断的补间）会把节点留在旧位置，
+            // 后面可能再没有任何渲染来收尾 —— 落地校正要能把它捞回来
+            const rescued = JSON.parse(await cdp.eval(`
+                (function () {
+                    var app = window.__codemap, cy = app.cy;
+                    app.render({ animate: false });
+                    var t = cy.nodes('[isType]')[0];
+                    if (!t) return JSON.stringify({ skip: true });
+                    var id = t.id();
+                    setTimeout(function () {
+                        var el = cy.getElementById(id);
+                        if (el.empty()) return;
+                        var p = el.position();
+                        el.position({ x: p.x + 700, y: p.y + 400 });
+                    }, 60);
+                    return JSON.stringify({ skip: false, id: id });
+                })()`));
+            if (!rescued.skip) {
+                await sleep(1800);
+                check('被写过期位置的节点会被落地校正收回容器内',
+                    (await insideParent(cdp, rescued.id)) === 'true');
+            }
+
             await cdp.eval('window.__codemap.resetDragOffsets(); true');
         }
     }
